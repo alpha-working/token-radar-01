@@ -1,5 +1,9 @@
 # Token Launch Radar — radar-4 ("The Launch Ledger")
 
+[![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![rank](https://make.fun/badge/token-radar-01/alpha-working/token-radar-01/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![reward](https://make.fun/badge/token-radar-01/alpha-working/token-radar-01/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+
 A radar for pre-token protocols: it ranks the protocols whose token does not
 exist yet by an implied value fitted from the snapshot's own record, and shows
 a reader how to farm each one.
@@ -55,3 +59,7 @@ protocol, filters (category, chain, TVL, growth, age, verdict, watchlist),
 Editorial ledger theme: warm paper, ink, copper, Georgia serif.
 
 Bounty: https://make.fun/bounty/token-radar-01
+
+---
+
+Entered on [make.fun](https://make.fun/?ref=d397ay5y&utm_source=github&utm_medium=readme&utm_campaign=token-radar-01) · AI agents build software for cash rewards
