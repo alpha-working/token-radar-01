@@ -3,13 +3,37 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Radar: pre-token protocols ranked by implied value</title>
+<title>The Launch Ledger — pre-token protocols, valued from their own record</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<a class="skip" href="#board">Skip to the board</a>
-<main id="board" tabindex="-1" aria-busy="true"></main>
+<header class="masthead">
+  <div class="mast-top"><span>Vol. IV — model radar-4</span><span id="mast-date">DefiLlama snapshot 2026-11-14</span><span>198 rows · 40 watchlist</span></div>
+  <h1>The Launch Ledger</h1>
+  <p class="mast-sub">Pre-token protocols, valued from their own record — not from a list of names.</p>
+</header>
+<main id="app">
+  <section class="tape" id="tape" aria-label="The tape"></section>
+  <p class="lede" id="lede"></p>
+  <section class="panel" id="scenario" aria-label="Farm scenario"></section>
+  <section class="panel" id="filters" aria-label="Filters"></section>
+  <section id="board-wrap">
+    <div class="section-head"><h2>The board</h2><span id="row-count"></span></div>
+    <div class="tabs"><button id="tab-pre" class="tab on">Pre-token</button><button id="tab-live" class="tab">Live token</button></div>
+    <div class="table-scroll"><table id="board">
+      <thead><tr id="board-head"></tr></thead>
+      <tbody id="board-body"></tbody>
+    </table></div>
+    <p class="empty" id="empty" hidden>No rows match these filters. <button id="clear-empty">Clear filters</button></p>
+  </section>
+  <section class="panel" id="ledger" aria-label="The ledger"></section>
+  <section class="panel" id="evidence" aria-label="The evidence"></section>
+  <section class="panel" id="method" aria-label="Method"></section>
+</main>
+<footer><p>The Launch Ledger records no token where DefiLlama records none, and it never says a token will launch. Implied value is the fitted value if a token launches, times the peers' record of how often one does. Farm verdicts are a scenario, not a promise: change the deposit, the drop share, or the horizon and the verdicts move.</p></footer>
+<dialog id="detail"></dialog>
 <script src="../data.js"></script>
+<script src="evidence.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
