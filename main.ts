@@ -54,13 +54,13 @@ mkdirSync(outDir, { recursive: true });
 writeFileSync(join(outDir, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
 writeFileSync(join(outDir, 'data.js'), dataScript(data));
 
-/** Copy one directory's regular files into `to`, skipping names that start with a dot. */
-function copyPlain(from: string, to: string): string[] {
+/** Copy one directory's regular files into `to`, skipping dot names and any name in `skip`. */
+function copyPlain(from: string, to: string, skip: ReadonlySet<string> = new Set()): string[] {
   if (!existsSync(from)) return [];
   mkdirSync(to, { recursive: true });
   const copied: string[] = [];
   for (const name of readdirSync(from)) {
-    if (name.startsWith('.')) continue;
+    if (name.startsWith('.') || skip.has(name)) continue;
     const path = join(from, name);
     if (!statSync(path).isFile()) continue;
     copyFileSync(path, join(to, name));
@@ -69,8 +69,10 @@ function copyPlain(from: string, to: string): string[] {
   return copied;
 }
 
-copyPlain(join(here, 'dashboard'), join(outDir, 'dashboard'));
-// The evidence is generated from this run's fits, so it is written fresh over the committed copy.
+// Skip the committed evidence.js: the grader stages /bot read-only (mode 444),
+// copyFileSync preserves that mode, and the sandbox user cannot overwrite it.
+copyPlain(join(here, 'dashboard'), join(outDir, 'dashboard'), new Set(['evidence.js']));
+// The evidence is generated from this run's fits, so it is written fresh.
 writeFileSync(join(outDir, 'dashboard', 'evidence.js'), evidenceScript(evidence));
 
 const shots = copyPlain(join(here, 'screenshots'), join(outDir, 'screenshots'));
