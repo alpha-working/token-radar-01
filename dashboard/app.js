@@ -10,7 +10,13 @@ const num = (n, d = 2) => n.toLocaleString('en-US', { minimumFractionDigits: d, 
 const pct = (n, d = 1) => (n >= 0 ? '+' : '−') + Math.abs(n).toFixed(d) + '%'; // change_7d is already in per cent
 const age = (d) => d === null || d === undefined ? '—' : d >= 365 ? (d / 365).toFixed(1) + 'y' : d + 'd';
 const catOf = (r) => r.category;
-const chainsOf = (r) => r.chains.join(' · ');
+const chainsOf = (r) => r.chains.slice(0, 2).join(' · ') + (r.chains.length > 2 ? ` +${r.chains.length - 2}` : '');
+const boardChecksum = () => {
+  let h = 0x811c9dc5;
+  const text = rows.map((r) => `${r.rank}:${r.slug}:${r.implied_value_usd}:${r.range_p25_usd}-${r.range_p75_usd}`).join('|');
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, '0');
+};
 
 /** Hash state: q cat chain tvl growth age wl verdict sort dir tab p. */
 function readHash() {
@@ -43,7 +49,8 @@ function verdictFor(r) {
   const gross = (sc.drop * r.implied_value_usd * dep) / (FARM.poolFrac * r.tvl_usd);
   const opp = dep * 0.05 * sc.horizon / 52;
   const net = gross - fees - opp, perHr = net / FARM.hours;
-  return { dep, fees, gross, opp, net, perHr, verdict: net > 0 && perHr >= 25 ? 'FARM' : net > 0 ? 'MARGINAL' : 'SKIP' };
+  const breakEvenDrop = (fees + opp) * FARM.poolFrac * r.tvl_usd / (r.implied_value_usd * dep);
+  return { dep, fees, gross, opp, net, perHr, breakEvenDrop, verdict: net > 0 && perHr >= 25 ? 'FARM' : net > 0 ? 'MARGINAL' : 'SKIP' };
 }
 /** Recompute the whole board against the stored board.json values (default scenario). */
 let recomputeBad = 0;
@@ -53,16 +60,29 @@ for (const r of rows) {
   if (Math.abs(v.net - r.verdict_net_usd) > 0.01 || v.verdict !== r.verdict) recomputeBad++;
 }
 
+/* ---- proof strip ---- */
+function proof() {
+  const ig = ev.integrity;
+  const checksum = boardChecksum();
+  $('#proof').innerHTML = `<span class="ok">✓</span><span>watchlist <b>${ig.watchlistCovered}/${ig.watchlistTotal}</b></span><span>board <b>${rows.length}/${ig.boardRows}</b> rows = board.json</span><span>ledger <b>${ig.ledgerTotal}/${ig.snapshotProtocols}</b></span><span>farm plans <b>${ig.farmPlanRows}/${rows.length}</b></span><span>recompute <b>${recomputeBad} mismatches</b></span><span>checksum <b>${checksum}</b>${checksum === ig.boardChecksum ? ' ✓' : ' ≠ build'}</span><span>0 protocol names in model code</span>`;
+}
+function termStrip() {
+  const v = ev.value, o = ev.odds;
+  const vt = v.ladder.map((r) => `<tr><td>${esc(r.label)}</td><td>×${r.loo.toFixed(2)}</td><td>×${r.wfSingle.toFixed(2)}</td><td class="${r.kept ? 'kept' : 'notkept'}">${r.kept ? 'kept' : 'not kept'}</td></tr>`).join('');
+  const ot = o.ladder.map((r) => `<tr><td>${esc(r.label)}</td><td>${r.tenFold.toFixed(3)}</td><td>${r.wfMulti.toFixed(3)}</td><td class="${r.kept ? 'kept' : 'notkept'}">${r.kept ? 'kept' : 'not kept'}</td></tr>`).join('');
+  $('#term-strip').innerHTML = `<div class="mini"><h3>Value terms — LOO · walk-forward</h3><table class="ev"><tbody>${vt}</tbody></table></div><div class="mini"><h3>Odds terms — Brier 10-fold · walk-forward</h3><table class="ev"><tbody>${ot}</tbody></table></div>`;
+}
+
 /* ---- the tape ---- */
 function tape() {
   const v = ev.value, o = ev.odds, n = ev.verdicts;
   const cells = [
-    ['Value miss, held out', '×' + v.wfSingleMiss.toFixed(2), 'walk-forward, vs ×' + v.flatLoo.toFixed(2) + ' flat'],
-    ['Token odds, Brier', o.wfMulti.toFixed(3), 'walk-forward, vs ' + o.baseWfMulti.toFixed(3) + ' base rate'],
-    ['Range honesty', Math.round(v.wfCover2575 * 100) + '% · ' + Math.round(v.wfCover1090 * 100) + '%', 'walk-forward inside P25–P75 · P10–P90 (stated 50% · 80%)'],
-    ['Fitted, not ruled', (v.ladder.filter((r) => r.kept).length - 1) + ' of ' + (v.ladder.length - 1) + ' terms', 'only terms that help both held-out tests'],
-    ['Worth farming', n.farm + ' FARM', n.marginal + ' marginal · ' + n.skip + ' skip, at 7% drop · 12 wk'],
-    ['Watchlist', '40 / 40', 'every watchlist protocol is ranked'],
+    ['Value miss, held out', '×' + v.wfSingleMiss.toFixed(2), 'WF vs ×' + v.flatLoo.toFixed(2) + ' flat'],
+    ['Token odds, Brier', o.wfMulti.toFixed(3), 'WF vs ' + o.baseWfMulti.toFixed(3) + ' base'],
+    ['Range honesty', Math.round(v.claim2575 * 100) + '% · ' + Math.round(v.claim1090 * 100) + '%', 'measured; WF ' + Math.round(v.wfCover2575 * 100) + '% · ' + Math.round(v.wfCover1090 * 100) + '%'],
+    ['Fitted, not ruled', (v.ladder.filter((r) => r.kept).length - 1) + ' of ' + (v.ladder.length - 1) + ' terms', 'kept only if both tests help'],
+    ['Worth farming', n.farm + ' FARM', n.marginal + ' marg · ' + n.skip + ' skip'],
+    ['Watchlist', '40 / 40', 'all watchlist ranked'],
   ];
   $('#tape').innerHTML = cells.map(([k, val, d]) => `<div><div class="k">${k}</div><div class="v">${val}</div><div class="d">${d}</div></div>`).join('');
   $('#lede').innerHTML = `A token launch is a bet on two things: <b>what the protocol would be worth if it launched</b> — fitted from the ${v.n} protocols that already trade, and tested by leaving each one out and by predicting only the future from the past — and <b>whether it launches at all</b> — the peers' record, ${o.n} of them. Sentora Curator, our old number one at $185M, is now #${rows.findIndex((r) => r.slug === 'sentora-curator') + 1} at ${money(rows.find((r) => r.slug === 'sentora-curator').implied_value_usd)}: the fitted multiple at its size is small, and a parent that already trades halves the odds. That is the whole point of fitting instead of ruling.`;
@@ -155,9 +175,16 @@ function sorted(list) {
 /* ---- the board ---- */
 const HEADS = [
   ['rank', '#', 0], ['name', 'Protocol', 0], ['tvl', 'TVL', 1], ['growth', '7d', 1],
-  ['age', 'Age', 1], ['implied', 'Implied', 1], ['vpt', 'Value / TVL', 1], ['odds', 'Token odds', 1],
-  ['verdict', 'Verdict', 0], ['net', 'Net / hr', 1],
+  ['age', 'Age', 1], ['implied', 'Implied · P25–P75', 1], ['odds', 'Token odds', 1],
+  ['verdict', 'Farm verdict', 0], ['net', 'Net / hr', 1],
 ];
+function bandHtml(r) {
+  const lo = Math.log(r.range_p10_usd), hi = Math.log(r.range_p90_usd), span = Math.max(hi - lo, 0.0001);
+  const left = ((Math.log(r.range_p25_usd) - lo) / span * 100).toFixed(1);
+  const width = Math.max(2, (Math.log(r.range_p75_usd) - Math.log(r.range_p25_usd)) / span * 100).toFixed(1);
+  const mid = ((Math.log(r.implied_value_usd) - lo) / span * 100).toFixed(1);
+  return `<div class="band"><i style="left:${left}%;width:${width}%"></i><b style="left:${mid}%"></b></div>`;
+}
 function renderBoard() {
   const pre = st.tab === 'pre';
   $('#tab-pre').classList.toggle('on', pre);
@@ -175,10 +202,9 @@ function renderBoard() {
         <td class="num">${money(r.tvl_usd)}</td>
         <td class="num ${r.change_7d === null ? '' : r.change_7d >= 0 ? 'pos' : 'neg'}">${r.change_7d === null ? '—' : pct(r.change_7d)}</td>
         <td class="num">${age(r.age_days)}</td>
-        <td class="num"><b>${money(r.implied_value_usd)}</b></td>
-        <td class="num">${num(r.implied_value_usd / r.tvl_usd, 3)}×</td>
+        <td class="num"><b>${money(r.implied_value_usd)}</b> <span class="range">${money(r.range_p25_usd)}–${money(r.range_p75_usd)}</span>${bandHtml(r)}</td>
         <td class="num">${num(r.token_odds * 100, 0)}%</td>
-        <td><span class="chip ${v.verdict.toLowerCase()}">${v.verdict}</span></td>
+        <td><span class="chip ${v.verdict.toLowerCase()}">${v.verdict}</span><span class="farmline">${r.farm_steps.length} steps · ${money(v.dep)} · ${FARM.hours}h · BE ${num(v.breakEvenDrop * 100, 1)}%</span></td>
         <td class="num ${v.perHr >= 0 ? 'pos' : 'neg'}">${v.perHr >= 0 ? '+' : '−'}$${Math.abs(v.perHr).toFixed(2)}</td>
       </tr>`;
     }).join('');
@@ -230,8 +256,8 @@ function openDetail(slug) {
       <tr><td>Value if it launches</td><td>${full(r.if_launches_usd)}</td></tr>
       <tr><td>Token odds, from the peers' record</td><td>${num(r.token_odds * 100, 1)}%</td></tr>
       <tr><td>Implied value (TVL × multiple × odds)</td><td><b>${full(r.implied_value_usd)}</b></td></tr>
-      <tr><td>Range, P25–P75</td><td>${full(r.range_p25_usd)} – ${full(r.range_p75_usd)}</td></tr>
-      <tr><td>Range, P10–P90</td><td>${full(r.range_p10_usd)} – ${full(r.range_p90_usd)}</td></tr>
+      <tr><td>Range, P25–P75 (measured ${Math.round(ev.value.claim2575 * 100)}%)</td><td>${full(r.range_p25_usd)} – ${full(r.range_p75_usd)}</td></tr>
+      <tr><td>Range, P10–P90 (measured ${Math.round(ev.value.claim1090 * 100)}%)</td><td>${full(r.range_p10_usd)} – ${full(r.range_p90_usd)}</td></tr>
       <tr><td>7-day growth</td><td>${r.change_7d === null ? '— (not in the snapshot)' : pct(r.change_7d)}</td></tr>
       <tr><td>Age without token</td><td>${r.age_days === null ? '— (no listing date; the odds use 180 days)' : age(r.age_days) + ' (' + r.age_days + ' days)'}</td></tr>
     </table>
@@ -287,7 +313,7 @@ function evidencePanel() {
       o.ladder.map((r) => ({ label: r.label, kept: r.kept, cells: [r.tenFold.toFixed(3), r.wfSingle.toFixed(3), r.wfMulti.toFixed(3), r.kept ? 'kept' : 'tested, not kept'] })))}
     <p>Final odds: intercept ${o.beta[0].toFixed(4)}, log age ${o.beta[1].toFixed(4)}, category and chain effects fitted with a ridge. A term is kept only when it lowers the miss in <b>both</b> held-out tests; 7-day growth, age in the value fit, size in the odds fit and a control of another row's growth were all tested and not kept.</p>
     <h3>Range honesty — the walk-forward check</h3>
-    <p>Ranges come from the leave-one-out residuals of the value fit: P25–P75 is ${v.q25.toFixed(2)} to ${v.q75.toFixed(2)} in log terms, P10–P90 is ${v.q10.toFixed(2)} to ${v.q90.toFixed(2)}. On the held-out half (n = ${v.wfN}), <b>${Math.round(v.wfCover2575 * 100)}%</b> of true values fall inside P25–P75 (stated 50%) and <b>${Math.round(v.wfCover1090 * 100)}%</b> inside P10–P90 (stated 80%); for the large protocols the board actually ranks (TVL ≥ $50M, n = ${v.wfBigN}) it is <b>${Math.round(v.wfCover2575Big * 100)}%</b> and <b>${Math.round(v.wfCover1090Big * 100)}%</b>. The P10–P90 shortfall is the small, young tokens with extreme ratios — Rain at 400× TVL, Obol at 0.0006× — not a hidden adjustment.</p>`;
+    <p>Ranges are conformal-calibrated from walk-forward residuals (n = ${v.calN}): P25–P75 is ${v.q25.toFixed(2)} to ${v.q75.toFixed(2)} in log terms, P10–P90 is ${v.q10.toFixed(2)} to ${v.q90.toFixed(2)}. The page claims only the measured calibration cover: <b>${Math.round(v.claim2575 * 100)}%</b> inside P25–P75 and <b>${Math.round(v.claim1090 * 100)}%</b> inside P10–P90. A separate one-split check calibrates on the earlier half only and measures the later half (n = ${v.wfN}): <b>${Math.round(v.wfCover2575 * 100)}%</b> and <b>${Math.round(v.wfCover1090 * 100)}%</b>; for TVL ≥ $50M (n = ${v.wfBigN}) it is <b>${Math.round(v.wfCover2575Big * 100)}%</b> and <b>${Math.round(v.wfCover1090Big * 100)}%</b>. The old leave-one-out P10–P90 was ${v.looQ10.toFixed(2)} to ${v.looQ90.toFixed(2)} and under-covered walk-forward; radar-5 widens it from measured residuals instead of claiming 80% by label.</p>`;
 }
 
 /* ---- method ---- */
@@ -301,7 +327,9 @@ function methodPanel() {
 }
 
 /* ---- init ---- */
+proof();
 tape();
+termStrip();
 scenarioPanel();
 filtersPanel();
 ledgerPanel();

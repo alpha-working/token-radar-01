@@ -1,4 +1,4 @@
-// The Launch Ledger — radar-4 entrypoint (Node 22, standard library only).
+// The Launch Ledger — radar-5 entrypoint (Node 22, standard library only).
 //
 // Reads the sealed snapshot, fits the value multiple and the token odds on the
 // snapshot's own record, ranks every rankable pre-token protocol, and writes
@@ -94,7 +94,7 @@ process.stdout.write(
   `launch ledger: ${snap.protocols.length} protocols, ${snap.watchlist.length} on the watchlist, ${board.length} rows ranked\n` +
     `launch ledger: value multiple fitted on ${v.n} traded tokens — leave-one-out x${v.looMiss.toFixed(2)}, walk-forward x${v.wfSingleMiss.toFixed(2)}\n` +
     `launch ledger: token odds fitted on ${o.n} peers (base rate ${o.baseRate.toFixed(3)}) — ten-fold Brier ${o.tenFold.toFixed(3)}, walk-forward ${o.wfMulti.toFixed(3)}\n` +
-    `launch ledger: range honesty, walk-forward: ${Math.round(v.wfCover2575 * 100)}% inside P25-P75 (stated 50%), ${Math.round(v.wfCover1090 * 100)}% inside P10-P90 (stated 80%)\n` +
+    `launch ledger: range honesty, measured claim: ${Math.round(v.claim2575 * 100)}% inside P25-P75, ${Math.round(v.claim1090 * 100)}% inside P10-P90 (walk-forward check ${Math.round(v.wfCover2575 * 100)}% / ${Math.round(v.wfCover1090 * 100)}%)\n` +
     `launch ledger: ledger ${evidence.ledger.reduce((s, g) => s + g.count, 0)} of ${snap.protocols.length} protocols in ${evidence.ledger.length} groups\n` +
     `launch ledger: farm verdicts — ${evidence.verdicts.farm} FARM, ${evidence.verdicts.marginal} MARGINAL, ${evidence.verdicts.skip} SKIP\n` +
     `launch ledger: top 5: ${top}\n` +

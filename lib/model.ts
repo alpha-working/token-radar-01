@@ -1,4 +1,4 @@
-// The Launch Ledger's model: radar-4.
+// The Launch Ledger's model: radar-5.
 //
 // One snapshot of the protocol universe in, one ranked board out. The value
 // multiple and the token odds are both fitted on the snapshot's own record and
@@ -16,8 +16,8 @@
 //           leaves out only because its parent already records a token has
 //           its odds halved: a stated assumption, not a fitted number, because
 //           the snapshot holds no case that would fit it.
-//   range   the leave-one-out residuals' quantiles, printed as P25-P75 and
-//           P10-P90, with the walk-forward cover reported beside them.
+//   range   walk-forward residuals, conformal-calibrated into P25-P75 and
+//           P10-P90 bands; the page claims only the measured cover.
 //
 // Deterministic: fixed iteration counts, no randomness, no clock. The same
 // snapshot always yields the same board, byte for byte.
@@ -53,7 +53,7 @@ export class LedgerError extends Error {
   }
 }
 
-export const MODEL_VERSION = 'radar-4';
+export const MODEL_VERSION = 'radar-5';
 const DAY_MS = 86_400_000;
 
 /** A finite number, else `fallback`. */
@@ -216,6 +216,24 @@ export function typicalMiss(pred: number[], actual: number[]): number {
   return Math.exp(quantile(errs, 0.5));
 }
 
+/** Share of residuals inside [lo, hi]. */
+function coverOf(residuals: number[], lo: number, hi: number): number {
+  return residuals.length === 0 ? 0 : residuals.filter((r) => r >= lo && r <= hi).length / residuals.length;
+}
+
+/**
+ * A central conformal interval from calibration residuals. The finite-sample
+ * correction widens the nominal quantiles slightly; the page then claims the
+ * measured cover of these residuals, not the nominal target.
+ */
+function centralInterval(sortedResiduals: number[], target: number): [number, number] {
+  const n = sortedResiduals.length;
+  const alpha = 1 - target;
+  const loP = Math.max(0, Math.floor((n + 1) * (alpha / 2)) / n);
+  const hiP = Math.min(1, Math.ceil((n + 1) * (1 - alpha / 2)) / n);
+  return [quantile(sortedResiduals, loP), quantile(sortedResiduals, hiP)];
+}
+
 /** The Brier score: the mean squared gap between a predicted probability and the 0/1 outcome. */
 export function brierScore(pred: number[], actual: number[]): number {
   let s = 0;
@@ -267,6 +285,15 @@ export interface ValueModel {
   q25: number;
   q75: number;
   q90: number;
+  looQ10: number;
+  looQ25: number;
+  looQ75: number;
+  looQ90: number;
+  calCover2575: number;
+  calCover1090: number;
+  calN: number;
+  claim2575: number;
+  claim1090: number;
   looCover2575: number;
   looCover1090: number;
   looWithin3: number;
@@ -471,39 +498,49 @@ export function fitValue(snap: Snap): ValueModel {
   const looPred = valueLoo(x, y, pen, fullCols);
   const looResiduals = y.map((v, i) => v - looPred[i]!);
   const sortedRes = [...looResiduals].sort((a, b) => a - b);
-  const q10 = quantile(sortedRes, 0.1);
-  const q25 = quantile(sortedRes, 0.25);
-  const q75 = quantile(sortedRes, 0.75);
-  const q90 = quantile(sortedRes, 0.9);
-  const looCover2575 = looResiduals.filter((r) => r >= q25 && r <= q75).length / n;
-  const looCover1090 = looResiduals.filter((r) => r >= q10 && r <= q90).length / n;
+  const looQ10 = quantile(sortedRes, 0.1);
+  const looQ25 = quantile(sortedRes, 0.25);
+  const looQ75 = quantile(sortedRes, 0.75);
+  const looQ90 = quantile(sortedRes, 0.9);
+
+  // Radar-5 calibration: intervals are set from walk-forward residuals, not
+  // leave-one-out residuals. The pooled four-window residuals are the
+  // calibration set; a separate one-split check calibrates only on the
+  // earlier half's walk-forward residuals and measures the later half.
+  const wfAll = valueWfMulti(x, y, pen, fullCols, listed);
+  const calRes = wfAll.actual.map((a, i) => a - wfAll.pred[i]!);
+  const calSorted = [...calRes].sort((a, b) => a - b);
+  const [q25, q75] = centralInterval(calSorted, 0.5);
+  const [q10, q90] = centralInterval(calSorted, 0.8);
+  const calCover2575 = coverOf(calRes, q25, q75);
+  const calCover1090 = coverOf(calRes, q10, q90);
+  const looCover2575 = coverOf(looResiduals, q25, q75);
+  const looCover1090 = coverOf(looResiduals, q10, q90);
   const looWithin3 = looResiduals.filter((r) => Math.abs(r) <= Math.log(3)).length / n;
 
-  // Walk-forward calibration: intervals from the train half's own leave-one-out residuals.
   const sortedListed = [...listed].sort();
   const med = sortedListed[Math.floor(sortedListed.length / 2)]!;
   const trIdx = listed.map((d, i) => (d < med ? i : -1)).filter((i) => i >= 0);
   const teIdx = listed.map((d, i) => (d >= med ? i : -1)).filter((i) => i >= 0);
-  const trainRes: number[] = [];
-  for (const i of trIdx) {
-    const rest = trIdx.filter((j) => j !== i);
-    const betaTr = medianFit(rest.map((j) => fullSub.x[j]!), rest.map((j) => y[j]!), fullSub.pen);
-    trainRes.push(y[i]! - dot(fullSub.x[i]!, betaTr));
-  }
-  const trainSorted = [...trainRes].sort((a, b) => a - b);
-  const tq10 = quantile(trainSorted, 0.1);
-  const tq25 = quantile(trainSorted, 0.25);
-  const tq75 = quantile(trainSorted, 0.75);
-  const tq90 = quantile(trainSorted, 0.9);
+  const trainWf = valueWfMulti(
+    trIdx.map((i) => x[i]!),
+    trIdx.map((i) => y[i]!),
+    pen,
+    fullCols,
+    trIdx.map((i) => listed[i]!),
+  );
+  const trainCalSorted = trainWf.actual.map((a, i) => a - trainWf.pred[i]!).sort((a, b) => a - b);
+  const [tq25, tq75] = centralInterval(trainCalSorted, 0.5);
+  const [tq10, tq90] = centralInterval(trainCalSorted, 0.8);
   const betaTr = medianFit(trIdx.map((i) => fullSub.x[i]!), trIdx.map((i) => y[i]!), fullSub.pen);
   const testRes = teIdx.map((i) => y[i]! - dot(fullSub.x[i]!, betaTr));
-  const wfCover2575 = testRes.filter((r) => r >= tq25 && r <= tq75).length / testRes.length;
-  const wfCover1090 = testRes.filter((r) => r >= tq10 && r <= tq90).length / testRes.length;
+  const wfCover2575 = coverOf(testRes, tq25, tq75);
+  const wfCover1090 = coverOf(testRes, tq10, tq90);
   const wfWithin3 = testRes.filter((r) => Math.abs(r) <= Math.log(3)).length / testRes.length;
   const bigIdx = teIdx.filter((i) => set[i]!.tvl_usd >= 50_000_000);
   const bigRes = bigIdx.map((i) => y[i]! - dot(fullSub.x[i]!, betaTr));
-  const wfCover2575Big = bigRes.length > 0 ? bigRes.filter((r) => r >= tq25 && r <= tq75).length / bigRes.length : 0;
-  const wfCover1090Big = bigRes.length > 0 ? bigRes.filter((r) => r >= tq10 && r <= tq90).length / bigRes.length : 0;
+  const wfCover2575Big = coverOf(bigRes, tq25, tq75);
+  const wfCover1090Big = coverOf(bigRes, tq10, tq90);
 
   const finalRung = rungs[4]!;
   return {
@@ -524,6 +561,15 @@ export function fitValue(snap: Snap): ValueModel {
     q25,
     q75,
     q90,
+    looQ10,
+    looQ25,
+    looQ75,
+    looQ90,
+    calCover2575,
+    calCover1090,
+    calN: calRes.length,
+    claim2575: calCover2575,
+    claim1090: calCover1090,
     looCover2575,
     looCover1090,
     looWithin3,
@@ -1113,6 +1159,16 @@ export interface Evidence {
   odds: OddsModel;
   ledger: LedgerGroup[];
   verdicts: { farm: number; marginal: number; skip: number };
+  integrity: {
+    boardRows: number;
+    watchlistCovered: number;
+    watchlistTotal: number;
+    ledgerTotal: number;
+    snapshotProtocols: number;
+    boardChecksum: string;
+    farmPlanRows: number;
+    recomputeMismatches: number;
+  };
   farmDefaults: FarmScenario;
   gasByChain: Record<string, number>;
   gasDefault: number;
@@ -1134,6 +1190,17 @@ function nearestLive(p: Proto, priced: Proto[]): Proto | null {
     }
   }
   return best;
+}
+
+/** FNV-1a checksum over the board's ranking claim; the page recomputes it. */
+function boardChecksum(board: BoardRow[]): string {
+  let h = 0x811c9dc5;
+  const text = board.map((r) => `${r.rank}:${r.slug}:${r.implied_value_usd}:${r.range_p25_usd}-${r.range_p75_usd}`).join('|');
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
 }
 
 /** Build the board, the ledger and the evidence from the snapshot. */
@@ -1265,6 +1332,16 @@ export function buildLedger(snap: Snap): { board: BoardRow[]; data: RadarData; e
     odds,
     ledger: groups,
     verdicts,
+    integrity: {
+      boardRows: board.length,
+      watchlistCovered: board.filter((r) => r.watchlist).length,
+      watchlistTotal: snap.watchlist.length,
+      ledgerTotal: groups.reduce((s, g) => s + g.count, 0),
+      snapshotProtocols: snap.protocols.length,
+      boardChecksum: boardChecksum(board),
+      farmPlanRows: board.filter((r) => r.farm_steps.length >= 3).length,
+      recomputeMismatches: board.filter((r) => Math.round(r.tvl_usd * r.value_multiple * r.token_odds) !== r.implied_value_usd).length,
+    },
     farmDefaults: FARM_DEFAULT,
     gasByChain: GAS_BY_CHAIN,
     gasDefault: GAS_DEFAULT,

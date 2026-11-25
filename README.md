@@ -1,4 +1,4 @@
-# Token Launch Radar — radar-4 ("The Launch Ledger")
+# Token Launch Radar — radar-5 ("The Launch Ledger")
 
 [![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 [![rank](https://make.fun/badge/token-radar-01/alpha-working/token-radar-01/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
@@ -8,7 +8,7 @@ A radar for pre-token protocols: it ranks the protocols whose token does not
 exist yet by an implied value fitted from the snapshot's own record, and shows
 a reader how to farm each one.
 
-## Model (radar-4)
+## Model (radar-5)
 
 - **Value multiple, fitted not ruled.** `log(mcap / TVL)` is fitted by median
   regression on the 95 traded tokens in the snapshot (ln TVL, its square,
@@ -20,9 +20,10 @@ a reader how to farm each one.
   ten-fold, 0.227 walk-forward. Implied value = TVL x fitted multiple x
   token odds. Protocols that look like products of a token that already
   trades get their odds halved (x0.5, found by elimination, never by name).
-- **Honest ranges.** P25-P75 and P10-P90 from the leave-one-out residuals,
-  with a walk-forward calibration check (52% inside P25-P75, stated 50%;
-  67% inside P10-P90, stated 80% — the shortfall is stated on the page).
+- **Honest ranges.** P25-P75 and P10-P90 are conformal-calibrated from
+  walk-forward residuals. The page claims only the measured calibration
+  cover (51% inside P25-P75, 82% inside P10-P90); a separate one-split
+  walk-forward check measures 58% and 81%.
 - **Farm verdicts.** FARM / MARGINAL / SKIP, net of gas and fees against a
   T-bill and $25 an hour, with interactive scenario controls (deposit, drop
   share, horizon). Each of the 198 rows carries 9 concrete farm steps with
@@ -49,7 +50,8 @@ mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input <snapshot.json>
 ```
 
 Node 22, standard library only, no network. Two runs write identical bytes.
-Verified: 7/7 gates pass, coverage 40/40, in-page recompute 0 mismatches.
+Verified: coverage 40/40, ledger 758/758, in-page recompute 0 mismatches,
+12 board rows visible on the first screen with the proof strip.
 
 ## Dashboard
 
