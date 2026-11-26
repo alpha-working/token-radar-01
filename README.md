@@ -16,8 +16,9 @@ a reader how to farm each one.
   held-out miss in both a leave-one-out test and a walk-forward test
   (leave-one-out x2.91, walk-forward x2.44, vs a flat x5.00 baseline).
 - **Token odds, from the peers' record.** A logit on 442 peers (base rate
-  0.595) estimates the chance a protocol records a token; Brier 0.197
-  ten-fold, 0.227 walk-forward. Implied value = TVL x fitted multiple x
+  0.595) estimates the chance a protocol records a token; Brier 0.195
+  ten-fold, 0.231 walk-forward single-split and 0.216 walk-forward
+  multi-split. Implied value = TVL x fitted multiple x
   token odds. Protocols that look like products of a token that already
   trades get their odds halved (x0.5, found by elimination, never by name).
 - **Honest ranges.** P25-P75 and P10-P90 are conformal-calibrated from
@@ -26,7 +27,7 @@ a reader how to farm each one.
   walk-forward check measures 58% and 81%. Radar-6 adds the range-honesty
   table with leave-one-out and walk-forward columns, a cap-vs-TVL scatter,
   a worked example for row #1, and a category-blind check (value x3.74,
-  odds Brier 0.205).
+  odds Brier 0.204).
 - **Farm verdicts.** FARM / MARGINAL / SKIP, net of gas and fees against a
   T-bill and $25 an hour, with interactive scenario controls (deposit, drop
   share, horizon). Each of the 198 rows carries 9 concrete farm steps with
@@ -44,10 +45,9 @@ to have none.
 ## Board
 
 198 rows: the 40 watchlist protocols plus 158 launch-like protocols below
-the floor. Top 5: Steakhouse Financial $30.1M, Gauntlet $20.9M, USDD $19.6M,
-Veda $14.9M, Upshift $13.8M. Sentora Curator, radar-3's #1 at $185M, is
-#10 at $10.0M — the fitted multiple at its size is 0.033x and the parent
-discount halves its odds to 11%.
+the floor. Top 5: USDD $23.6M, Steakhouse Financial $23.0M, Gauntlet $17.0M,
+Lightning Network $16.8M, Veda $15.7M. Sentora Curator, radar-3's #1 at
+$185M, is #12 at $10.8M under the fitted model.
 
 ## Run
 
@@ -57,7 +57,7 @@ mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input <snapshot.json>
 
 Node 22, standard library only, no network. Two runs write identical bytes.
 Verified: coverage 40/40, ledger 758/758, in-page recompute 0 mismatches,
-board.json sha256 87a818654bc1f01616db035e4e085a7ad9f9285f6c64a5b23883f4016c327015.
+board.json sha256 5705cdb1b897a0af26967b37b266b0866a529488fe0457d442647ca4fb3e174d.
 
 ## Dashboard
 

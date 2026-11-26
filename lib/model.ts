@@ -10,8 +10,10 @@
 //
 //   value   log(mcap/tvl) ~ median regression on ln TVL, its square, the
 //           chain count and a shrunk category effect; 95 traded tokens.
-//   odds    logit P(records a token) ~ log age, a shrunk category effect and
-//           a shrunk first-chain effect; 442 peers listed a year or more.
+//   odds    logit P(records a token) ~ log age, a shrunk category effect, a
+//           shrunk first-chain effect, a size/age structure bundle (floor
+//           position, first-chain rarity, category-relative TVL) and age
+//           thresholds; 442 peers listed a year or more.
 //   implied TVL x fitted multiple x token odds. A protocol the watchlist
 //           leaves out only because its parent already records a token has
 //           its odds halved: a stated assumption, not a fitted number, because
@@ -660,12 +662,17 @@ export interface OddsModel {
   ladder: OddsRung[];
   finalTerms: string[];
   lcMean: number;
+  floorUsd: number;
+  chainFreq: Record<string, number>;
+  catTvlStats: Record<string, { mean: number; sd: number }>;
   catBlindBrier: number;
 }
 
 const ODDS_LAMBDA_CAT = 3;
 const ODDS_LAMBDA_CHAIN = 10;
 const ODDS_TOP_CHAINS = 12;
+const ODDS_AGE_THRESHOLDS = [1.5, 2, 2.5, 3, 4, 5];
+const ODDS_AGE_THRESHOLD_PEN = 1;
 
 /** The twelve most common first chains among the peers, ties by first appearance in slug order. */
 function topChains(peers: Proto[]): string[] {
@@ -707,7 +714,35 @@ function oddsPen(nCat: number, nCh: number): number[] {
   return [0, 0, ...new Array<number>(nCat).fill(ODDS_LAMBDA_CAT), ...new Array<number>(nCh).fill(ODDS_LAMBDA_CHAIN)];
 }
 
-/** Which columns a rung uses: log-age, size, growth, cat, chain, and the placebo control. */
+/** Peer first-chain counts and per-category log-TVL location/scale, from the peers only. */
+function oddsStructureStats(peers: Proto[]): { chainFreq: Record<string, number>; catTvlStats: Record<string, { mean: number; sd: number }> } {
+  const chainFreq: Record<string, number> = {};
+  const byCat = new Map<string, number[]>();
+  for (const p of peers) {
+    const ch = p.chains.length > 0 ? p.chains[0]! : '?';
+    chainFreq[ch] = (chainFreq[ch] ?? 0) + 1;
+    const cat = p.category ?? '?';
+    if (!byCat.has(cat)) byCat.set(cat, []);
+    byCat.get(cat)!.push(Math.log(p.tvl_usd));
+  }
+  const catTvlStats: Record<string, { mean: number; sd: number }> = {};
+  for (const [cat, vals] of byCat) {
+    const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+    const sd = Math.sqrt(vals.reduce((s, v) => s + (v - mean) * (v - mean), 0) / vals.length) || 1;
+    catTvlStats[cat] = { mean, sd };
+  }
+  return { chainFreq, catTvlStats };
+}
+
+/** The size/age structure columns for one protocol: floor position, chain rarity, category-relative TVL. */
+function oddsStructureRow(p: Proto, floorUsd: number, chainFreq: Record<string, number>, catTvlStats: Record<string, { mean: number; sd: number }>): number[] {
+  const ch = p.chains.length > 0 ? p.chains[0]! : '?';
+  const stats = catTvlStats[p.category ?? '?'];
+  const catZ = stats === undefined ? 0 : (Math.log(p.tvl_usd) - stats.mean) / stats.sd;
+  return [p.tvl_usd >= floorUsd ? 1 : 0, Math.log(p.tvl_usd / floorUsd), -Math.log(Math.max(1, chainFreq[ch] ?? 1)), catZ];
+}
+
+/** Which columns a rung uses: log-age, size, growth, cat, chain, structure, age thresholds, control. */
 function oddsCols(terms: string[], nCat: number, nCh: number): number[] {
   const cols = [0, 1];
   if (terms.includes('size')) cols.push(2 + nCat + nCh);
@@ -715,14 +750,14 @@ function oddsCols(terms: string[], nCat: number, nCh: number): number[] {
   if (terms.includes('cat')) for (let i = 0; i < nCat; i++) cols.push(2 + i);
   if (terms.includes('chain')) for (let i = 0; i < nCh; i++) cols.push(2 + nCat + i);
   if (terms.includes('ctrl')) cols.push(4 + nCat + nCh);
+  if (terms.includes('structure')) for (let i = 0; i < 4; i++) cols.push(5 + nCat + nCh + i);
+  if (terms.includes('agebands')) for (let i = 0; i < ODDS_AGE_THRESHOLDS.length; i++) cols.push(9 + nCat + nCh + i);
   return cols;
 }
 
 /** The full odds design, with the tested-extra columns appended after the kept ones. */
-function oddsFullRows(peers: Proto[], categories: string[], top: string[], asOf: string): number[][] {
+function oddsFullRows(peers: Proto[], categories: string[], top: string[], asOf: string, floorUsd: number): number[][] {
   const base = oddsRows(peers, categories, top, asOf);
-  const nCat = categories.length;
-  const nCh = top.length + 1;
   const lcs = peers.map((p) => Math.log(p.tvl_usd));
   const lcMean = lcs.reduce((s, v) => s + v, 0) / lcs.length;
   const growth = peers.map((p) => {
@@ -730,14 +765,23 @@ function oddsFullRows(peers: Proto[], categories: string[], top: string[], asOf:
     const g = Math.min(1.2, Math.max(-0.7, (p.change_7d ?? 0) / 100));
     return Math.sign(g) * Math.log1p(Math.abs(g));
   });
+  const { chainFreq, catTvlStats } = oddsStructureStats(peers);
   return base.map((row, i) => {
-    const extra = [lcs[i]! - lcMean, growth[i]!, growth[(i - 7 + peers.length) % peers.length]!];
+    const p = peers[i]!;
+    const ageYears = (ageDays(asOf, p.listed_at) ?? 180) / 365;
+    const extra = [
+      lcs[i]! - lcMean,
+      growth[i]!,
+      growth[(i - 7 + peers.length) % peers.length]!,
+      ...oddsStructureRow(p, floorUsd, chainFreq, catTvlStats),
+      ...ODDS_AGE_THRESHOLDS.map((t) => (ageYears >= t ? 1 : 0)),
+    ];
     return [...row, ...extra];
   });
 }
 
 function oddsFullPen(nCat: number, nCh: number): number[] {
-  return [...oddsPen(nCat, nCh), 0, 0, 0];
+  return [...oddsPen(nCat, nCh), 0, 0, 0, 0.001, 0.001, 0.001, 0.001, ...new Array<number>(ODDS_AGE_THRESHOLDS.length).fill(ODDS_AGE_THRESHOLD_PEN)];
 }
 
 /** The logistic fit by Newton steps: 60 rounds at most, stopping when the step is tiny. */
@@ -858,24 +902,29 @@ export function fitOdds(snap: Snap): OddsModel {
   const baseRate = y.reduce((s, v) => s + v, 0) / n;
   const categories = [...new Set(peers.map((p) => p.category ?? '?'))].sort();
   const top = topChains(peers);
-  const x = oddsFullRows(peers, categories, top, snap.as_of);
+  const x = oddsFullRows(peers, categories, top, snap.as_of, snap.floor_usd);
   const pen = oddsFullPen(categories.length, top.length + 1);
   const base = oddsBase(x, y, listed);
+  const { chainFreq, catTvlStats } = oddsStructureStats(peers);
 
   const rungs: OddsRung[] = [];
   rungs.push({ label: 'base rate of peers', terms: [], kept: true, tenFold: base.tenFold, wfSingle: base.wfSingle, wfMulti: base.wfMulti });
-  const ladderTerms: string[][] = [['cat'], ['cat', 'chain']];
+  const ladderTerms: string[][] = [['cat'], ['cat', 'chain'], ['cat', 'chain', 'structure'], ['cat', 'chain', 'structure', 'agebands']];
+  const ladderLabels: Record<string, string> = { cat: '+ category', chain: '+ first chain', structure: '+ size/age structure', agebands: '+ age thresholds' };
   let prev = base;
+  let finalTerms: string[] = [];
   for (const terms of ladderTerms) {
     const cols = oddsCols(terms, categories.length, top.length + 1);
     const tf = oddsTenFold(x, y, pen, cols);
     const wf1 = oddsWfSingle(x, y, pen, cols, listed);
     const wfM = oddsWfMulti(x, y, pen, cols, listed);
-    const kept = tf < prev.tenFold && wfM < prev.wfMulti;
-    rungs.push({ label: `+ ${terms[terms.length - 1]!}`, terms: [...terms], kept, tenFold: tf, wfSingle: wf1, wfMulti: wfM });
-    if (kept) prev = { tenFold: tf, wfSingle: wf1, wfMulti: wfM };
+    const kept = tf < prev.tenFold && wf1 < prev.wfSingle && wfM < prev.wfMulti;
+    rungs.push({ label: ladderLabels[terms[terms.length - 1]!] ?? `+ ${terms[terms.length - 1]!}`, terms: [...terms], kept, tenFold: tf, wfSingle: wf1, wfMulti: wfM });
+    if (kept) {
+      prev = { tenFold: tf, wfSingle: wf1, wfMulti: wfM };
+      finalTerms = [...terms];
+    }
   }
-  const finalTerms = ['cat', 'chain'];
   const extras: Array<{ label: string; term: string }> = [
     { label: '+ size, ln TVL', term: 'size' },
     { label: '+ 7-day growth', term: 'growth' },
@@ -887,7 +936,7 @@ export function fitOdds(snap: Snap): OddsModel {
     const tenFold = oddsTenFold(x, y, pen, cols);
     const wfSingle = oddsWfSingle(x, y, pen, cols, listed);
     const wfMulti = oddsWfMulti(x, y, pen, cols, listed);
-    const kept = extra.term !== 'ctrl' && tenFold < prev.tenFold && wfMulti < prev.wfMulti;
+    const kept = extra.term !== 'ctrl' && tenFold < prev.tenFold && wfSingle < prev.wfSingle && wfMulti < prev.wfMulti;
     rungs.push({ label: extra.label, terms, kept, tenFold, wfSingle, wfMulti });
     if (kept) {
       finalTerms.push(extra.term);
@@ -928,6 +977,9 @@ export function fitOdds(snap: Snap): OddsModel {
     ladder: rungs,
     finalTerms,
     lcMean,
+    floorUsd: snap.floor_usd,
+    chainFreq,
+    catTvlStats,
     catBlindBrier,
   };
 }
@@ -936,10 +988,11 @@ export function fitOdds(snap: Snap): OddsModel {
 export function tokenOdds(p: Proto, model: OddsModel, asOf: string): number {
   const nCat = model.categories.length;
   const nCh = model.topChains.length + 1;
-  const row = new Array<number>(5 + nCat + nCh).fill(0);
+  const row = new Array<number>(15 + nCat + nCh).fill(0);
   row[0] = 1;
   const a = ageDays(asOf, p.listed_at);
-  row[1] = Math.log1p((a ?? 180) / 365);
+  const ageYears = (a ?? 180) / 365;
+  row[1] = Math.log1p(ageYears);
   const catAt = model.categories.indexOf(p.category ?? '?');
   if (catAt >= 0) row[2 + catAt] = 1;
   const ch = p.chains.length > 0 ? p.chains[0]! : '?';
@@ -948,6 +1001,9 @@ export function tokenOdds(p: Proto, model: OddsModel, asOf: string): number {
   row[2 + nCat + nCh] = Math.log(p.tvl_usd) - model.lcMean;
   const g = Math.min(1.2, Math.max(-0.7, (p.change_7d ?? 0) / 100));
   row[3 + nCat + nCh] = Math.sign(g) * Math.log1p(Math.abs(g));
+  const structure = oddsStructureRow(p, model.floorUsd, model.chainFreq, model.catTvlStats);
+  for (let i = 0; i < structure.length; i++) row[5 + nCat + nCh + i] = structure[i]!;
+  for (let i = 0; i < ODDS_AGE_THRESHOLDS.length; i++) row[9 + nCat + nCh + i] = ageYears >= ODDS_AGE_THRESHOLDS[i]! ? 1 : 0;
   const cols = oddsCols(model.finalTerms, nCat, nCh);
   return logistic(dot(cols.map((c) => row[c]!), model.beta));
 }
