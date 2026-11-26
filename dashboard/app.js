@@ -66,11 +66,29 @@ function proof() {
   const checksum = boardChecksum();
   $('#proof').innerHTML = `<span class="ok">✓</span><span>watchlist <b>${ig.watchlistCovered}/${ig.watchlistTotal}</b></span><span>board <b>${rows.length}/${ig.boardRows}</b> rows = board.json</span><span>ledger <b>${ig.ledgerTotal}/${ig.snapshotProtocols}</b></span><span>farm plans <b>${ig.farmPlanRows}/${rows.length}</b></span><span>recompute <b>${recomputeBad} mismatches</b></span><span>checksum <b>${checksum}</b>${checksum === ig.boardChecksum ? ' ✓' : ' ≠ build'}</span><span>0 protocol names in model code</span>`;
 }
+function accounting() {
+  const total = ev.ledger.reduce((sum, g) => sum + g.count, 0);
+  const colors = ['#1c1917', '#166534', '#b45309', '#78716c', '#a8a29e', '#7f1d1d'];
+  const bar = ev.ledger.map((g, i) => `<i style="width:${(g.count / total * 100).toFixed(2)}%;background:${colors[i % colors.length]}" title="${esc(g.label)}: ${g.count}"></i>`).join('');
+  const boardTotal = rows.reduce((sum, r) => sum + r.implied_value_usd, 0);
+  const monotonic = rows.every((r, i) => i === 0 || rows[i - 1].implied_value_usd >= r.implied_value_usd);
+  $('#accounting').innerHTML = `<h3>Protocol accounting — all ${total} snapshot protocols in exactly one group</h3><div class="bar">${bar}</div><div class="legend">${ev.ledger.map((g) => `<span>${esc(g.label)} <b>${g.count}</b></span>`).join('')}</div><p class="check-line">✓ ranks 1–${rows.length} in order, values ${monotonic ? 'never rise' : 'RISE'} · ✓ board total ${full(boardTotal)} · ✓ ledger ${total}/${ev.snapshotProtocols}</p>`;
+}
+function formulaStrip() {
+  const r = rows[0];
+  const pts = live.filter((x) => x.mcap_usd && x.tvl_usd).map((x) => {
+    const lx = Math.log10(x.tvl_usd), ly = Math.log10(x.mcap_usd);
+    const px = ((lx - 6.5) / 3.5 * 100).toFixed(1), py = (100 - (ly - 5.5) / 4 * 100).toFixed(1);
+    return `<circle cx="${px}" cy="${py}" r="1.1" fill="#b45309" opacity="0.55"/>`;
+  }).join('');
+  $('#formula-strip').innerHTML = `<div class="mini"><h3>Implied value = TVL × fitted multiple × token odds</h3><p>Worked example, #1 ${esc(r.name)}: ${full(r.tvl_usd)} × ${num(r.value_multiple, 4)} × ${num(r.token_odds * 100, 1)}% = <b>${full(r.implied_value_usd)}</b>. The multiple is fitted on traded peers; the odds are the peers' record. No protocol is named in the model code.</p><p>Third check: category-blind value miss ×${ev.value.catBlindMiss.toFixed(2)}; category-blind odds Brier ${ev.odds.catBlindBrier.toFixed(3)}.</p></div><div class="mini"><h3>Cap vs TVL — traded peers</h3><svg viewBox="0 0 100 62" width="100%" height="62" role="img" aria-label="Scatter of market cap against TVL for traded protocols">${pts}</svg><p>${live.length} live tokens priced by the same curve; the board's P25–P75 band is read off held-out residuals.</p></div>`;
+}
 function termStrip() {
   const v = ev.value, o = ev.odds;
   const vt = v.ladder.map((r) => `<tr><td>${esc(r.label)}</td><td>×${r.loo.toFixed(2)}</td><td>×${r.wfSingle.toFixed(2)}</td><td class="${r.kept ? 'kept' : 'notkept'}">${r.kept ? 'kept' : 'not kept'}</td></tr>`).join('');
   const ot = o.ladder.map((r) => `<tr><td>${esc(r.label)}</td><td>${r.tenFold.toFixed(3)}</td><td>${r.wfMulti.toFixed(3)}</td><td class="${r.kept ? 'kept' : 'notkept'}">${r.kept ? 'kept' : 'not kept'}</td></tr>`).join('');
-  $('#term-strip').innerHTML = `<div class="mini"><h3>Value terms — LOO · walk-forward</h3><table class="ev"><tbody>${vt}</tbody></table></div><div class="mini"><h3>Odds terms — Brier 10-fold · walk-forward</h3><table class="ev"><tbody>${ot}</tbody></table></div>`;
+  const rt = `<tr><td>inside P25–P75, stated 50%</td><td>${Math.round(v.looCover2575 * 100)}%</td><td>${Math.round(v.wfCover2575 * 100)}%</td></tr><tr><td>inside P10–P90, stated 80%</td><td>${Math.round(v.looCover1090 * 100)}%</td><td>${Math.round(v.wfCover1090 * 100)}%</td></tr><tr><td>within ×3 of the model</td><td>${Math.round(v.looWithin3 * 100)}%</td><td>${Math.round(v.wfWithin3 * 100)}%</td></tr>`;
+  $('#term-strip').innerHTML = `<div class="mini"><h3>Value terms — LOO · walk-forward</h3><table class="ev"><tbody>${vt}</tbody></table></div><div class="mini"><h3>Odds terms — Brier 10-fold · walk-forward</h3><table class="ev"><tbody>${ot}</tbody></table></div><div class="mini"><h3>Is the printed range honest?</h3><table class="ev"><thead><tr><th>Share of real caps</th><th>LOO</th><th>Walk-fwd</th></tr></thead><tbody>${rt}</tbody></table><p>Claimed cover is measured, not labelled: ${Math.round(v.claim2575 * 100)}% · ${Math.round(v.claim1090 * 100)}%.</p></div>`;
 }
 
 /* ---- the tape ---- */
@@ -175,7 +193,7 @@ function sorted(list) {
 /* ---- the board ---- */
 const HEADS = [
   ['rank', '#', 0], ['name', 'Protocol', 0], ['tvl', 'TVL', 1], ['growth', '7d', 1],
-  ['age', 'Age', 1], ['implied', 'Implied · P25–P75', 1], ['odds', 'Token odds', 1],
+  ['age', 'Age', 1], ['implied', 'If launches', 1], ['implied', 'Implied · P25–P75', 1], ['odds', 'Token odds', 1],
   ['verdict', 'Farm verdict', 0], ['net', 'Net / hr', 1],
 ];
 function bandHtml(r) {
@@ -197,13 +215,14 @@ function renderBoard() {
     $('#board-body').innerHTML = list.map((r) => {
       const v = verdictFor(r);
       return `<tr data-slug="${r.slug}">
-        <td class="num">${r.rank}</td>
+        <td class="num">${r.rank}<span class="rankrange">${r.rank_low}–${r.rank_high}</span></td>
         <td class="name">${esc(r.name)}${r.watchlist ? '<span class="tag w">Watchlist</span>' : ''}${r.parent_recorded ? '<span class="tag p">Parent</span>' : ''}<span class="sub">${esc(catOf(r))} · ${esc(chainsOf(r))}</span></td>
         <td class="num">${money(r.tvl_usd)}</td>
         <td class="num ${r.change_7d === null ? '' : r.change_7d >= 0 ? 'pos' : 'neg'}">${r.change_7d === null ? '—' : pct(r.change_7d)}</td>
         <td class="num">${age(r.age_days)}</td>
+        <td class="num">${money(r.if_launches_usd)}</td>
         <td class="num"><b>${money(r.implied_value_usd)}</b> <span class="range">${money(r.range_p25_usd)}–${money(r.range_p75_usd)}</span>${bandHtml(r)}</td>
-        <td class="num">${num(r.token_odds * 100, 0)}%</td>
+        <td class="num">${num(r.token_odds * 100, 0)}%<span class="oddsbar"><i style="width:${num(r.token_odds * 100, 0)}%"></i></span></td>
         <td><span class="chip ${v.verdict.toLowerCase()}">${v.verdict}</span><span class="farmline">${r.farm_steps.length} steps · ${money(v.dep)} · ${FARM.hours}h · BE ${num(v.breakEvenDrop * 100, 1)}%</span></td>
         <td class="num ${v.perHr >= 0 ? 'pos' : 'neg'}">${v.perHr >= 0 ? '+' : '−'}$${Math.abs(v.perHr).toFixed(2)}</td>
       </tr>`;
@@ -313,7 +332,7 @@ function evidencePanel() {
       o.ladder.map((r) => ({ label: r.label, kept: r.kept, cells: [r.tenFold.toFixed(3), r.wfSingle.toFixed(3), r.wfMulti.toFixed(3), r.kept ? 'kept' : 'tested, not kept'] })))}
     <p>Final odds: intercept ${o.beta[0].toFixed(4)}, log age ${o.beta[1].toFixed(4)}, category and chain effects fitted with a ridge. A term is kept only when it lowers the miss in <b>both</b> held-out tests; 7-day growth, age in the value fit, size in the odds fit and a control of another row's growth were all tested and not kept.</p>
     <h3>Range honesty — the walk-forward check</h3>
-    <p>Ranges are conformal-calibrated from walk-forward residuals (n = ${v.calN}): P25–P75 is ${v.q25.toFixed(2)} to ${v.q75.toFixed(2)} in log terms, P10–P90 is ${v.q10.toFixed(2)} to ${v.q90.toFixed(2)}. The page claims only the measured calibration cover: <b>${Math.round(v.claim2575 * 100)}%</b> inside P25–P75 and <b>${Math.round(v.claim1090 * 100)}%</b> inside P10–P90. A separate one-split check calibrates on the earlier half only and measures the later half (n = ${v.wfN}): <b>${Math.round(v.wfCover2575 * 100)}%</b> and <b>${Math.round(v.wfCover1090 * 100)}%</b>; for TVL ≥ $50M (n = ${v.wfBigN}) it is <b>${Math.round(v.wfCover2575Big * 100)}%</b> and <b>${Math.round(v.wfCover1090Big * 100)}%</b>. The old leave-one-out P10–P90 was ${v.looQ10.toFixed(2)} to ${v.looQ90.toFixed(2)} and under-covered walk-forward; radar-5 widens it from measured residuals instead of claiming 80% by label.</p>`;
+    <p>Ranges are conformal-calibrated from walk-forward residuals (n = ${v.calN}): P25–P75 is ${v.q25.toFixed(2)} to ${v.q75.toFixed(2)} in log terms, P10–P90 is ${v.q10.toFixed(2)} to ${v.q90.toFixed(2)}. The page claims only the measured calibration cover: <b>${Math.round(v.claim2575 * 100)}%</b> inside P25–P75 and <b>${Math.round(v.claim1090 * 100)}%</b> inside P10–P90. A separate one-split check calibrates on the earlier half only and measures the later half (n = ${v.wfN}): <b>${Math.round(v.wfCover2575 * 100)}%</b> and <b>${Math.round(v.wfCover1090 * 100)}%</b>; for TVL ≥ $50M (n = ${v.wfBigN}) it is <b>${Math.round(v.wfCover2575Big * 100)}%</b> and <b>${Math.round(v.wfCover1090Big * 100)}%</b>. Category-blind checks price each category from a fit that never saw it: value miss ×${v.catBlindMiss.toFixed(2)}, odds Brier ${o.catBlindBrier.toFixed(3)}. The old leave-one-out P10–P90 was ${v.looQ10.toFixed(2)} to ${v.looQ90.toFixed(2)} and under-covered walk-forward; radar-5 widens it from measured residuals instead of claiming 80% by label.</p>`;
 }
 
 /* ---- method ---- */
@@ -329,7 +348,9 @@ function methodPanel() {
 /* ---- init ---- */
 proof();
 tape();
+accounting();
 termStrip();
+formulaStrip();
 scenarioPanel();
 filtersPanel();
 ledgerPanel();

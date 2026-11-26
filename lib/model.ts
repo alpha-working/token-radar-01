@@ -1,4 +1,4 @@
-// The Launch Ledger's model: radar-5.
+// The Launch Ledger's model: radar-6.
 //
 // One snapshot of the protocol universe in, one ranked board out. The value
 // multiple and the token odds are both fitted on the snapshot's own record and
@@ -53,7 +53,7 @@ export class LedgerError extends Error {
   }
 }
 
-export const MODEL_VERSION = 'radar-5';
+export const MODEL_VERSION = 'radar-6';
 const DAY_MS = 86_400_000;
 
 /** A finite number, else `fallback`. */
@@ -304,6 +304,8 @@ export interface ValueModel {
   wfCover1090Big: number;
   wfN: number;
   wfBigN: number;
+  finalTerms: string[];
+  catBlindMiss: number;
 }
 
 const VALUE_LAMBDA_CAT = 30;
@@ -470,27 +472,31 @@ export function fitValue(snap: Snap): ValueModel {
     });
     if (kept) prev = { loo, wfSingle: typicalMiss(wf1.pred, wf1.actual), wfMulti: typicalMiss(wfM.pred, wfM.actual) };
   }
-  // Terms tested on the full model and not kept: each must fail at least one held-out test.
-  const fullCols = valueCols(['size', 'quad', 'chains', 'cat'], categories.length);
-  const extras: Array<{ label: string; terms: string[] }> = [
-    { label: '+ 7-day growth', terms: ['size', 'quad', 'chains', 'cat', 'growth'] },
-    { label: '+ age, years listed', terms: ['size', 'quad', 'chains', 'cat', 'age'] },
-    { label: '+ control: growth of another row', terms: ['size', 'quad', 'chains', 'cat', 'ctrl'] },
+  // Extra terms are admitted by the same rule as the ladder: kept only when
+  // they lower the miss in every held-out test. The placebo control is never
+  // admitted; it is printed so the reader can see the tests have power.
+  const finalTerms = ['size', 'quad', 'chains', 'cat'];
+  const extras: Array<{ label: string; term: string }> = [
+    { label: '+ 7-day growth', term: 'growth' },
+    { label: '+ age, years listed', term: 'age' },
+    { label: '+ control: growth of another row', term: 'ctrl' },
   ];
   for (const extra of extras) {
-    const cols = valueCols(extra.terms, categories.length);
+    const terms = [...finalTerms, extra.term];
+    const cols = valueCols(terms, categories.length);
     const loo = typicalMiss(valueLoo(x, y, pen, cols), y);
     const wf1 = valueWfSingle(x, y, pen, cols, listed);
     const wfM = valueWfMulti(x, y, pen, cols, listed);
-    rungs.push({
-      label: extra.label,
-      terms: [...extra.terms],
-      kept: false,
-      loo,
-      wfSingle: typicalMiss(wf1.pred, wf1.actual),
-      wfMulti: typicalMiss(wfM.pred, wfM.actual),
-    });
+    const wfSingle = typicalMiss(wf1.pred, wf1.actual);
+    const wfMulti = typicalMiss(wfM.pred, wfM.actual);
+    const kept = extra.term !== 'ctrl' && loo < prev.loo && wfSingle < prev.wfSingle && wfMulti < prev.wfMulti;
+    rungs.push({ label: extra.label, terms, kept, loo, wfSingle, wfMulti });
+    if (kept) {
+      finalTerms.push(extra.term);
+      prev = { loo, wfSingle, wfMulti };
+    }
   }
+  const fullCols = valueCols(finalTerms, categories.length);
 
   // The final fit, on all 95, in the kept columns only, and its leave-one-out residuals.
   const fullSub = valueSub(x, pen, fullCols);
@@ -542,7 +548,18 @@ export function fitValue(snap: Snap): ValueModel {
   const wfCover2575Big = coverOf(bigRes, tq25, tq75);
   const wfCover1090Big = coverOf(bigRes, tq10, tq90);
 
-  const finalRung = rungs[4]!;
+  const finalRung = { loo: prev.loo, wfSingle: prev.wfSingle, wfMulti: prev.wfMulti };
+  // Category-blind check: price every category from a fit that never saw it.
+  const catBlindPred: number[] = [];
+  const catBlindActual: number[] = [];
+  for (const cat of categories) {
+    const tr = set.map((q, i) => (q.category ?? '?') !== cat ? i : -1).filter((i) => i >= 0);
+    const te = set.map((q, i) => (q.category ?? '?') === cat ? i : -1).filter((i) => i >= 0);
+    if (te.length === 0 || tr.length === 0) continue;
+    const betaBlind = medianFit(tr.map((i) => fullSub.x[i]!), tr.map((i) => y[i]!), fullSub.pen);
+    for (const i of te) { catBlindPred.push(dot(fullSub.x[i]!, betaBlind)); catBlindActual.push(y[i]!); }
+  }
+  const catBlindMiss = typicalMiss(catBlindPred, catBlindActual);
   return {
     n,
     lcMean,
@@ -580,16 +597,27 @@ export function fitValue(snap: Snap): ValueModel {
     wfCover1090Big,
     wfN: testRes.length,
     wfBigN: bigRes.length,
+    finalTerms,
+    catBlindMiss,
   };
 }
 
 /** The fitted multiple for one protocol: exp(intercept + size + quad + chains + category). */
 export function fittedMultiple(p: Proto, model: ValueModel): number {
+  const nCat = model.categories.length;
   const lc = Math.log(p.tvl_usd) - model.lcMean;
-  let log = model.beta[0]! + model.beta[1]! * lc + model.beta[2]! * lc * lc + model.beta[3]! * p.chains.length;
+  const row = new Array<number>(7 + nCat).fill(0);
+  row[0] = 1;
+  row[1] = lc;
+  row[2] = lc * lc;
+  row[3] = p.chains.length;
   const at = model.categories.indexOf(p.category ?? '?');
-  if (at >= 0) log += model.beta[4 + at]!;
-  return Math.exp(log);
+  if (at >= 0) row[4 + at] = 1;
+  const g = Math.min(1.2, Math.max(-0.7, (p.change_7d ?? 0) / 100));
+  row[4 + nCat] = Math.sign(g) * Math.log1p(Math.abs(g));
+  row[5 + nCat] = 180 / 365;
+  const cols = valueCols(model.finalTerms, nCat);
+  return Math.exp(dot(cols.map((c) => row[c]!), model.beta));
 }
 
 // ---------------------------------------------------------------- the token odds
@@ -630,6 +658,9 @@ export interface OddsModel {
   baseWfSingle: number;
   baseWfMulti: number;
   ladder: OddsRung[];
+  finalTerms: string[];
+  lcMean: number;
+  catBlindBrier: number;
 }
 
 const ODDS_LAMBDA_CAT = 3;
@@ -844,28 +875,42 @@ export function fitOdds(snap: Snap): OddsModel {
     rungs.push({ label: `+ ${terms[terms.length - 1]!}`, terms: [...terms], kept, tenFold: tf, wfSingle: wf1, wfMulti: wfM });
     if (kept) prev = { tenFold: tf, wfSingle: wf1, wfMulti: wfM };
   }
-  const extras: Array<{ label: string; terms: string[] }> = [
-    { label: '+ size, ln TVL', terms: ['cat', 'chain', 'size'] },
-    { label: '+ 7-day growth', terms: ['cat', 'chain', 'growth'] },
-    { label: '+ control: growth of another row', terms: ['cat', 'chain', 'ctrl'] },
+  const finalTerms = ['cat', 'chain'];
+  const extras: Array<{ label: string; term: string }> = [
+    { label: '+ size, ln TVL', term: 'size' },
+    { label: '+ 7-day growth', term: 'growth' },
+    { label: '+ control: growth of another row', term: 'ctrl' },
   ];
   for (const extra of extras) {
-    const cols = oddsCols(extra.terms, categories.length, top.length + 1);
-    rungs.push({
-      label: extra.label,
-      terms: [...extra.terms],
-      kept: false,
-      tenFold: oddsTenFold(x, y, pen, cols),
-      wfSingle: oddsWfSingle(x, y, pen, cols, listed),
-      wfMulti: oddsWfMulti(x, y, pen, cols, listed),
-    });
+    const terms = [...finalTerms, extra.term];
+    const cols = oddsCols(terms, categories.length, top.length + 1);
+    const tenFold = oddsTenFold(x, y, pen, cols);
+    const wfSingle = oddsWfSingle(x, y, pen, cols, listed);
+    const wfMulti = oddsWfMulti(x, y, pen, cols, listed);
+    const kept = extra.term !== 'ctrl' && tenFold < prev.tenFold && wfMulti < prev.wfMulti;
+    rungs.push({ label: extra.label, terms, kept, tenFold, wfSingle, wfMulti });
+    if (kept) {
+      finalTerms.push(extra.term);
+      prev = { tenFold, wfSingle, wfMulti };
+    }
   }
 
-  // The final fit, on all 442 peers, in the kept columns only.
-  const finalCols = oddsCols(['cat', 'chain'], categories.length, top.length + 1);
+  // The final fit, on all peers, in the kept columns only.
+  const finalCols = oddsCols(finalTerms, categories.length, top.length + 1);
   const sub = { x: x.map((row) => finalCols.map((c) => row[c]!)), pen: finalCols.map((c) => pen[c]!) };
   const beta = fitLogit(sub.x, y, sub.pen);
-  const finalRung = rungs[2]!;
+  const finalRung = { tenFold: prev.tenFold, wfSingle: prev.wfSingle, wfMulti: prev.wfMulti };
+  const lcMean = peers.reduce((sum, q) => sum + Math.log(q.tvl_usd), 0) / n;
+  const catBlindPred: number[] = [];
+  const catBlindActual: number[] = [];
+  for (const cat of categories) {
+    const tr = peers.map((q, i) => (q.category ?? '?') !== cat ? i : -1).filter((i) => i >= 0);
+    const te = peers.map((q, i) => (q.category ?? '?') === cat ? i : -1).filter((i) => i >= 0);
+    if (te.length === 0 || tr.length === 0) continue;
+    const betaBlind = fitLogit(tr.map((i) => sub.x[i]!), tr.map((i) => y[i]!), sub.pen);
+    for (const i of te) { catBlindPred.push(logistic(dot(sub.x[i]!, betaBlind))); catBlindActual.push(y[i]!); }
+  }
+  const catBlindBrier = brierScore(catBlindPred, catBlindActual);
   return {
     n,
     baseRate,
@@ -881,21 +926,30 @@ export function fitOdds(snap: Snap): OddsModel {
     baseWfSingle: base.wfSingle,
     baseWfMulti: base.wfMulti,
     ladder: rungs,
+    finalTerms,
+    lcMean,
+    catBlindBrier,
   };
 }
 
 /** The token odds for one protocol: the peers' record, as a probability. */
 export function tokenOdds(p: Proto, model: OddsModel, asOf: string): number {
+  const nCat = model.categories.length;
+  const nCh = model.topChains.length + 1;
+  const row = new Array<number>(5 + nCat + nCh).fill(0);
+  row[0] = 1;
   const a = ageDays(asOf, p.listed_at);
-  const years = (a ?? 180) / 365;
-  let z = model.beta[0]! + model.beta[1]! * Math.log1p(years);
+  row[1] = Math.log1p((a ?? 180) / 365);
   const catAt = model.categories.indexOf(p.category ?? '?');
-  if (catAt >= 0) z += model.beta[2 + catAt]!;
+  if (catAt >= 0) row[2 + catAt] = 1;
   const ch = p.chains.length > 0 ? p.chains[0]! : '?';
   const chAt = model.topChains.indexOf(ch);
-  const nCat = model.categories.length;
-  z += model.beta[2 + nCat + (chAt >= 0 ? chAt : model.topChains.length)]!;
-  return logistic(z);
+  row[2 + nCat + (chAt >= 0 ? chAt : model.topChains.length)] = 1;
+  row[2 + nCat + nCh] = Math.log(p.tvl_usd) - model.lcMean;
+  const g = Math.min(1.2, Math.max(-0.7, (p.change_7d ?? 0) / 100));
+  row[3 + nCat + nCh] = Math.sign(g) * Math.log1p(Math.abs(g));
+  const cols = oddsCols(model.finalTerms, nCat, nCh);
+  return logistic(dot(cols.map((c) => row[c]!), model.beta));
 }
 
 // ---------------------------------------------------------------- the board, the farm plan, the verdict
@@ -1104,6 +1158,8 @@ export interface BoardRow {
   range_p10_usd: number;
   range_p90_usd: number;
   verdict: 'FARM' | 'MARGINAL' | 'SKIP';
+  rank_low: number;
+  rank_high: number;
   verdict_net_usd: number;
   verdict_net_per_hour_usd: number;
   farm_deposit_usd: number;
@@ -1256,6 +1312,8 @@ export function buildLedger(snap: Snap): { board: BoardRow[]; data: RadarData; e
     range_p10_usd: Math.max(1, Math.round(s.ifLaunches * Math.exp(value.q10) * s.od)),
     range_p90_usd: Math.max(1, Math.round(s.ifLaunches * Math.exp(value.q90) * s.od)),
     verdict: s.verdict.verdict,
+    rank_low: i + 1,
+    rank_high: i + 1,
     verdict_net_usd: Math.round(s.verdict.net * 100) / 100,
     verdict_net_per_hour_usd: Math.round(s.verdict.netPerHour * 100) / 100,
     farm_deposit_usd: s.verdict.deposit,
@@ -1268,6 +1326,11 @@ export function buildLedger(snap: Snap): { board: BoardRow[]; data: RadarData; e
     live_comp_tvl_usd: s.comp ? s.comp.tvl_usd : null,
     farm_steps: farmSteps(s.p, s.age),
   }));
+
+  for (const r of board) {
+    r.rank_low = 1 + board.filter((q) => q.range_p25_usd > r.range_p75_usd).length;
+    r.rank_high = board.filter((q) => q.range_p75_usd >= r.range_p25_usd).length;
+  }
 
   const live: LiveRow[] = snap.protocols
     .filter((p) => !isPreToken(p) && p.category !== 'CEX')
