@@ -1,4 +1,4 @@
-// The Launch Ledger — radar-5 entrypoint (Node 22, standard library only).
+// The Launch Ledger — radar-7 entrypoint (Node 22, standard library only).
 //
 // Reads the sealed snapshot, fits the value multiple and the token odds on the
 // snapshot's own record, ranks every rankable pre-token protocol, and writes

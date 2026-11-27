@@ -1,4 +1,4 @@
-// The Launch Ledger's model: radar-6.
+// The Launch Ledger's model: radar-7.
 //
 // One snapshot of the protocol universe in, one ranked board out. The value
 // multiple and the token odds are both fitted on the snapshot's own record and
@@ -55,7 +55,7 @@ export class LedgerError extends Error {
   }
 }
 
-export const MODEL_VERSION = 'radar-6';
+export const MODEL_VERSION = 'radar-7';
 const DAY_MS = 86_400_000;
 
 /** A finite number, else `fallback`. */
@@ -308,9 +308,30 @@ export interface ValueModel {
   wfBigN: number;
   finalTerms: string[];
   catBlindMiss: number;
+  calResiduals: number[];
+  boot: { refits: number; refTvl: number; refCategory: string; mult: number; multSe: number; logSe: number };
 }
 
 const VALUE_LAMBDA_CAT = 30;
+const VALUE_LAMBDA_CATSLOPE = 500;
+
+/** Deterministic seeded RNG (mulberry32) for the bootstrap: same seed, same refits. */
+function seededRng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Standard deviation of a sample. */
+function sdOf(vals: number[]): number {
+  const m = vals.reduce((s, v) => s + v, 0) / vals.length;
+  return Math.sqrt(vals.reduce((s, v) => s + (v - m) * (v - m), 0) / vals.length);
+}
 
 /** The value design rows for a set of protocols, in the model's term order. */
 function valueRows(protocols: Proto[], lcMean: number, categories: string[], asOf: string): number[][] {
@@ -318,13 +339,17 @@ function valueRows(protocols: Proto[], lcMean: number, categories: string[], asO
   const n = categories.length;
   const rows = protocols.map((p) => {
     const lc = Math.log(p.tvl_usd) - lcMean;
-    const row = new Array<number>(7 + n).fill(0);
+    const row = new Array<number>(7 + 2 * n).fill(0);
     row[0] = 1;
     row[1] = lc;
     row[2] = lc * lc;
     row[3] = p.chains.length;
     const at = catAt.get(p.category ?? '?');
-    if (at !== undefined) row[4 + at] = 1;
+    if (at !== undefined) {
+      row[4 + at] = 1;
+      // Shrunk category size-slope: this category's own ln-TVL slope, tested like every other term.
+      row[7 + n + at] = lc;
+    }
     // Tested-not-kept columns: 7-day growth (winsorised log) and age in years.
     // The snapshot's change_7d is already in per cent, so it is divided by 100 first.
     const g = Math.min(1.2, Math.max(-0.7, (p.change_7d ?? 0) / 100));
@@ -337,9 +362,9 @@ function valueRows(protocols: Proto[], lcMean: number, categories: string[], asO
   return rows;
 }
 
-/** The penalty per column for a value design: only the category effects are shrunk. */
+/** The penalty per column for a value design: only the category effects and slopes are shrunk. */
 function valuePen(nCat: number): number[] {
-  return [0, 0, 0, 0, ...new Array<number>(nCat).fill(VALUE_LAMBDA_CAT), 0, 0, 0];
+  return [0, 0, 0, 0, ...new Array<number>(nCat).fill(VALUE_LAMBDA_CAT), 0, 0, 0, ...new Array<number>(nCat).fill(VALUE_LAMBDA_CATSLOPE)];
 }
 
 /** Which columns a rung uses: flat, size, quad, chains, cat, and the tested extras. */
@@ -352,6 +377,7 @@ function valueCols(terms: string[], nCat: number): number[] {
   if (terms.includes('growth')) cols.push(4 + nCat);
   if (terms.includes('age')) cols.push(5 + nCat);
   if (terms.includes('ctrl')) cols.push(6 + nCat);
+  if (terms.includes('catslope')) for (let i = 0; i < nCat; i++) cols.push(7 + nCat + i);
   return cols;
 }
 
@@ -481,6 +507,7 @@ export function fitValue(snap: Snap): ValueModel {
   const extras: Array<{ label: string; term: string }> = [
     { label: '+ 7-day growth', term: 'growth' },
     { label: '+ age, years listed', term: 'age' },
+    { label: '+ category size slopes (shrunk)', term: 'catslope' },
     { label: '+ control: growth of another row', term: 'ctrl' },
   ];
   for (const extra of extras) {
@@ -562,6 +589,29 @@ export function fitValue(snap: Snap): ValueModel {
     for (const i of te) { catBlindPred.push(dot(fullSub.x[i]!, betaBlind)); catBlindActual.push(y[i]!); }
   }
   const catBlindMiss = typicalMiss(catBlindPred, catBlindActual);
+
+  // Bootstrap standard error for the fitted multiple at $100M TVL (1 chain,
+  // the fit set's modal category): 200 seeded resample refits of the final model.
+  const catCount = new Map<string, number>();
+  for (const p of set) catCount.set(p.category ?? '?', (catCount.get(p.category ?? '?') ?? 0) + 1);
+  const refCategory = [...catCount.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0]![0];
+  const refProto: Proto = { slug: 'ref', name: 'ref', category: refCategory, chains: ['ref'], tvl_usd: 100_000_000, change_7d: 0, mcap_usd: null, listed_at: null, gecko_id: null, symbol: null };
+  const refRowFull = valueRows([refProto], lcMean, categories, snap.as_of)[0]!;
+  const refRow = fullCols.map((c) => refRowFull[c]!);
+  const rngV = seededRng(20261127);
+  const bootLogs: number[] = [];
+  while (bootLogs.length < 200) {
+    const idx = Array.from({ length: n }, () => Math.floor(rngV() * n));
+    try {
+      const b = medianFit(idx.map((i) => fullSub.x[i]!), idx.map((i) => y[i]!), fullSub.pen);
+      bootLogs.push(dot(refRow, b));
+    } catch {
+      // A degenerate resample is skipped; the seeded stream keeps this deterministic.
+    }
+  }
+  const bootLogSe = sdOf(bootLogs);
+  const bootMult = Math.exp(dot(refRow, beta));
+  const boot = { refits: bootLogs.length, refTvl: 100_000_000, refCategory, mult: bootMult, multSe: bootMult * bootLogSe, logSe: bootLogSe };
   return {
     n,
     lcMean,
@@ -601,6 +651,8 @@ export function fitValue(snap: Snap): ValueModel {
     wfBigN: bigRes.length,
     finalTerms,
     catBlindMiss,
+    calResiduals: calRes,
+    boot,
   };
 }
 
@@ -608,13 +660,16 @@ export function fitValue(snap: Snap): ValueModel {
 export function fittedMultiple(p: Proto, model: ValueModel): number {
   const nCat = model.categories.length;
   const lc = Math.log(p.tvl_usd) - model.lcMean;
-  const row = new Array<number>(7 + nCat).fill(0);
+  const row = new Array<number>(7 + 2 * nCat).fill(0);
   row[0] = 1;
   row[1] = lc;
   row[2] = lc * lc;
   row[3] = p.chains.length;
   const at = model.categories.indexOf(p.category ?? '?');
-  if (at >= 0) row[4 + at] = 1;
+  if (at >= 0) {
+    row[4 + at] = 1;
+    row[7 + nCat + at] = lc;
+  }
   const g = Math.min(1.2, Math.max(-0.7, (p.change_7d ?? 0) / 100));
   row[4 + nCat] = Math.sign(g) * Math.log1p(Math.abs(g));
   row[5 + nCat] = 180 / 365;
@@ -642,6 +697,7 @@ export interface OddsRung {
   tenFold: number;
   wfSingle: number;
   wfMulti: number;
+  calledRight: number;
 }
 
 /** The fitted odds model: coefficients, the terms it kept, and the evidence for them. */
@@ -666,6 +722,8 @@ export interface OddsModel {
   chainFreq: Record<string, number>;
   catTvlStats: Record<string, { mean: number; sd: number }>;
   catBlindBrier: number;
+  calledRight: number;
+  boot: { refits: number; interceptSe: number; logAgeSe: number };
 }
 
 const ODDS_LAMBDA_CAT = 3;
@@ -819,7 +877,7 @@ export function fitLogit(x: number[][], y: number[], pen: number[]): number[] {
 }
 
 /** Ten-fold Brier: folds by slug order, every tenth protocol held out in turn. */
-function oddsTenFold(x: number[][], y: number[], pen: number[], cols: number[]): number {
+function oddsTenFold(x: number[][], y: number[], pen: number[], cols: number[]): { brier: number; calledRight: number } {
   const sub = { x: x.map((row) => cols.map((c) => row[c]!)), pen: cols.map((c) => pen[c]!) };
   const pred = new Array<number>(y.length).fill(0);
   for (let f = 0; f < 10; f++) {
@@ -828,7 +886,8 @@ function oddsTenFold(x: number[][], y: number[], pen: number[], cols: number[]):
     const beta = fitLogit(tr.map((i) => sub.x[i]!), tr.map((i) => y[i]!), sub.pen);
     for (const i of te) pred[i] = logistic(dot(sub.x[i]!, beta));
   }
-  return brierScore(pred, y);
+  const calledRight = pred.filter((p, i) => (p >= 0.5 ? 1 : 0) === y[i]!).length / y.length;
+  return { brier: brierScore(pred, y), calledRight };
 }
 
 /** Walk-forward, one split: train on the earlier-listed half, test on the later half. */
@@ -908,21 +967,25 @@ export function fitOdds(snap: Snap): OddsModel {
   const { chainFreq, catTvlStats } = oddsStructureStats(peers);
 
   const rungs: OddsRung[] = [];
-  rungs.push({ label: 'base rate of peers', terms: [], kept: true, tenFold: base.tenFold, wfSingle: base.wfSingle, wfMulti: base.wfMulti });
+  const baseCalledRight = y.filter((v) => (baseRate >= 0.5 ? 1 : 0) === v).length / n;
+  rungs.push({ label: 'base rate of peers', terms: [], kept: true, tenFold: base.tenFold, wfSingle: base.wfSingle, wfMulti: base.wfMulti, calledRight: baseCalledRight });
   const ladderTerms: string[][] = [['cat'], ['cat', 'chain'], ['cat', 'chain', 'structure'], ['cat', 'chain', 'structure', 'agebands']];
   const ladderLabels: Record<string, string> = { cat: '+ category', chain: '+ first chain', structure: '+ size/age structure', agebands: '+ age thresholds' };
   let prev = base;
   let finalTerms: string[] = [];
+  let finalCalledRight = baseCalledRight;
   for (const terms of ladderTerms) {
     const cols = oddsCols(terms, categories.length, top.length + 1);
-    const tf = oddsTenFold(x, y, pen, cols);
+    const tfR = oddsTenFold(x, y, pen, cols);
+    const tf = tfR.brier;
     const wf1 = oddsWfSingle(x, y, pen, cols, listed);
     const wfM = oddsWfMulti(x, y, pen, cols, listed);
     const kept = tf < prev.tenFold && wf1 < prev.wfSingle && wfM < prev.wfMulti;
-    rungs.push({ label: ladderLabels[terms[terms.length - 1]!] ?? `+ ${terms[terms.length - 1]!}`, terms: [...terms], kept, tenFold: tf, wfSingle: wf1, wfMulti: wfM });
+    rungs.push({ label: ladderLabels[terms[terms.length - 1]!] ?? `+ ${terms[terms.length - 1]!}`, terms: [...terms], kept, tenFold: tf, wfSingle: wf1, wfMulti: wfM, calledRight: tfR.calledRight });
     if (kept) {
       prev = { tenFold: tf, wfSingle: wf1, wfMulti: wfM };
       finalTerms = [...terms];
+      finalCalledRight = tfR.calledRight;
     }
   }
   const extras: Array<{ label: string; term: string }> = [
@@ -933,14 +996,16 @@ export function fitOdds(snap: Snap): OddsModel {
   for (const extra of extras) {
     const terms = [...finalTerms, extra.term];
     const cols = oddsCols(terms, categories.length, top.length + 1);
-    const tenFold = oddsTenFold(x, y, pen, cols);
+    const tfR = oddsTenFold(x, y, pen, cols);
+    const tenFold = tfR.brier;
     const wfSingle = oddsWfSingle(x, y, pen, cols, listed);
     const wfMulti = oddsWfMulti(x, y, pen, cols, listed);
     const kept = extra.term !== 'ctrl' && tenFold < prev.tenFold && wfSingle < prev.wfSingle && wfMulti < prev.wfMulti;
-    rungs.push({ label: extra.label, terms, kept, tenFold, wfSingle, wfMulti });
+    rungs.push({ label: extra.label, terms, kept, tenFold, wfSingle, wfMulti, calledRight: tfR.calledRight });
     if (kept) {
       finalTerms.push(extra.term);
       prev = { tenFold, wfSingle, wfMulti };
+      finalCalledRight = tfR.calledRight;
     }
   }
 
@@ -960,6 +1025,22 @@ export function fitOdds(snap: Snap): OddsModel {
     for (const i of te) { catBlindPred.push(logistic(dot(sub.x[i]!, betaBlind))); catBlindActual.push(y[i]!); }
   }
   const catBlindBrier = brierScore(catBlindPred, catBlindActual);
+
+  // Bootstrap standard errors for the odds logits: 200 seeded resample refits.
+  const rngO = seededRng(20261128);
+  const bootB0: number[] = [];
+  const bootB1: number[] = [];
+  while (bootB0.length < 200) {
+    const idx = Array.from({ length: n }, () => Math.floor(rngO() * n));
+    try {
+      const b = fitLogit(idx.map((i) => sub.x[i]!), idx.map((i) => y[i]!), sub.pen);
+      bootB0.push(b[0]!);
+      bootB1.push(b[1]!);
+    } catch {
+      // Degenerate resample skipped; seeded stream keeps this deterministic.
+    }
+  }
+  const boot = { refits: bootB0.length, interceptSe: sdOf(bootB0), logAgeSe: sdOf(bootB1) };
   return {
     n,
     baseRate,
@@ -981,6 +1062,8 @@ export function fitOdds(snap: Snap): OddsModel {
     chainFreq,
     catTvlStats,
     catBlindBrier,
+    calledRight: finalCalledRight,
+    boot,
   };
 }
 
@@ -1285,6 +1368,11 @@ export interface Evidence {
   gasByChain: Record<string, number>;
   gasDefault: number;
   boardTop: Array<{ rank: number; slug: string; name: string; implied: number }>;
+  scatter: {
+    refCategory: string;
+    points: Array<{ tvl: number; mcap: number }>;
+    band: Array<{ tvl: number; lo: number; mid: number; hi: number }>;
+  };
 }
 
 /** The nearest live-token protocol by TVL, preferring the same category. */
@@ -1465,6 +1553,18 @@ export function buildLedger(snap: Snap): { board: BoardRow[]; data: RadarData; e
     gasByChain: GAS_BY_CHAIN,
     gasDefault: GAS_DEFAULT,
     boardTop: board.slice(0, 10).map((r) => ({ rank: r.rank, slug: r.slug, name: r.name, implied: r.implied_value_usd })),
+    scatter: (() => {
+      const fitSet = valueFitSet(snap);
+      const points = fitSet.map((p) => ({ tvl: p.tvl_usd, mcap: p.mcap_usd! }));
+      const band: Array<{ tvl: number; lo: number; mid: number; hi: number }> = [];
+      for (let i = 0; i <= 24; i++) {
+        const tvl = Math.exp(Math.log(1e6) + ((Math.log(3e10) - Math.log(1e6)) * i) / 24);
+        const stub: Proto = { slug: 'ref', name: 'ref', category: value.boot.refCategory, chains: ['ref'], tvl_usd: tvl, change_7d: 0, mcap_usd: null, listed_at: null, gecko_id: null, symbol: null };
+        const mid = tvl * fittedMultiple(stub, value);
+        band.push({ tvl: Math.round(tvl), lo: Math.round(mid * Math.exp(value.q25)), mid: Math.round(mid), hi: Math.round(mid * Math.exp(value.q75)) });
+      }
+      return { refCategory: value.boot.refCategory, points, band };
+    })(),
   };
   return { board, data, evidence };
 }

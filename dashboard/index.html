@@ -8,23 +8,26 @@
 </head>
 <body>
 <header class="masthead">
-  <div class="mast-top"><span>Vol. VI — model radar-6</span><span id="mast-date">DefiLlama snapshot 2026-11-14</span><span>198 rows · 40 watchlist</span></div>
+  <div class="mast-top"><span>Vol. VII — model radar-7</span><span id="mast-date">DefiLlama snapshot 2026-11-14</span><span>198 rows · 40 watchlist</span></div>
   <h1>The Launch Ledger</h1>
   <p class="mast-sub">Pre-token protocols, valued from their own record — not from a list of names.</p>
 </header>
 <main id="app">
   <section class="proof" id="proof" aria-label="Integrity proof"></section>
   <section class="tape" id="tape" aria-label="The tape"></section>
+  <p class="bootline" id="bootline" aria-label="Bootstrap standard errors"></p>
   <section class="accounting" id="accounting" aria-label="Protocol accounting"></section>
   <section class="term-strip" id="term-strip" aria-label="Term evidence"></section>
-  <section class="formula-strip" id="formula-strip" aria-label="Formula and scatter"></section>
+  <section class="formula-strip" id="formula-strip" aria-label="Formula"></section>
   <div class="controls">
     <section class="panel" id="scenario" aria-label="Farm scenario"></section>
     <section class="panel" id="filters" aria-label="Filters"></section>
   </div>
   <section id="board-wrap">
-    <div class="section-head"><h2>The board</h2><span id="row-count"></span></div>
-    <div class="tabs"><button id="tab-pre" class="tab on">Pre-token</button><button id="tab-live" class="tab">Live token</button></div>
+    <div class="section-head"><h2>The board</h2><span id="row-count"></span>
+      <span class="board-tools"><button id="exp-csv" type="button">Download CSV</button><button id="exp-json" type="button">Download JSON</button></span></div>
+    <div class="tabs"><button id="tab-pre" class="tab on">Pre-token</button><button id="tab-live" class="tab">Live token</button>
+      <span class="compare-bar" id="compare-bar"><span id="compare-count">Tick rows to compare</span><button id="compare-open" type="button" disabled>Compare</button><button id="compare-clear" type="button">Clear</button></span></div>
     <div class="table-scroll"><table id="board">
       <thead><tr id="board-head"></tr></thead>
       <tbody id="board-body"></tbody>
@@ -38,6 +41,7 @@
 </main>
 <footer><p>The Launch Ledger records no token where DefiLlama records none, and it never says a token will launch. Implied value is the fitted value if a token launches, times the peers' record of how often one does. Farm verdicts are a scenario, not a promise: change the deposit, the drop share, or the horizon and the verdicts move.</p></footer>
 <dialog id="detail"></dialog>
+<dialog id="compare"></dialog>
 <script src="../data.js"></script>
 <script src="evidence.js"></script>
 <script src="app.js"></script>
