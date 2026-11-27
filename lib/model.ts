@@ -1,4 +1,4 @@
-// The Launch Ledger's model: radar-7.
+// The Launch Ledger's model: radar-8.
 //
 // One snapshot of the protocol universe in, one ranked board out. The value
 // multiple and the token odds are both fitted on the snapshot's own record and
@@ -55,7 +55,7 @@ export class LedgerError extends Error {
   }
 }
 
-export const MODEL_VERSION = 'radar-7';
+export const MODEL_VERSION = 'radar-8';
 const DAY_MS = 86_400_000;
 
 /** A finite number, else `fallback`. */
@@ -313,7 +313,7 @@ export interface ValueModel {
 }
 
 const VALUE_LAMBDA_CAT = 30;
-const VALUE_LAMBDA_CATSLOPE = 500;
+const VALUE_LAMBDA_CATSLOPE = 1500;
 
 /** Deterministic seeded RNG (mulberry32) for the bootstrap: same seed, same refits. */
 function seededRng(seed: number): () => number {
@@ -723,11 +723,12 @@ export interface OddsModel {
   catTvlStats: Record<string, { mean: number; sd: number }>;
   catBlindBrier: number;
   calledRight: number;
+  logMultBySlug: Record<string, number>;
   boot: { refits: number; interceptSe: number; logAgeSe: number };
 }
 
 const ODDS_LAMBDA_CAT = 3;
-const ODDS_LAMBDA_CHAIN = 10;
+const ODDS_LAMBDA_CHAIN = 20;
 const ODDS_TOP_CHAINS = 12;
 const ODDS_AGE_THRESHOLDS = [1.5, 2, 2.5, 3, 4, 5];
 const ODDS_AGE_THRESHOLD_PEN = 1;
@@ -810,11 +811,12 @@ function oddsCols(terms: string[], nCat: number, nCh: number): number[] {
   if (terms.includes('ctrl')) cols.push(4 + nCat + nCh);
   if (terms.includes('structure')) for (let i = 0; i < 4; i++) cols.push(5 + nCat + nCh + i);
   if (terms.includes('agebands')) for (let i = 0; i < ODDS_AGE_THRESHOLDS.length; i++) cols.push(9 + nCat + nCh + i);
+  if (terms.includes('logmult')) cols.push(15 + nCat + nCh);
   return cols;
 }
 
 /** The full odds design, with the tested-extra columns appended after the kept ones. */
-function oddsFullRows(peers: Proto[], categories: string[], top: string[], asOf: string, floorUsd: number): number[][] {
+function oddsFullRows(peers: Proto[], categories: string[], top: string[], asOf: string, floorUsd: number, logMultOf: (p: Proto) => number): number[][] {
   const base = oddsRows(peers, categories, top, asOf);
   const lcs = peers.map((p) => Math.log(p.tvl_usd));
   const lcMean = lcs.reduce((s, v) => s + v, 0) / lcs.length;
@@ -833,13 +835,15 @@ function oddsFullRows(peers: Proto[], categories: string[], top: string[], asOf:
       growth[(i - 7 + peers.length) % peers.length]!,
       ...oddsStructureRow(p, floorUsd, chainFreq, catTvlStats),
       ...ODDS_AGE_THRESHOLDS.map((t) => (ageYears >= t ? 1 : 0)),
+      // The value model's fitted log multiple: a snapshot-derived cross-check, tested like every term.
+      logMultOf(p),
     ];
     return [...row, ...extra];
   });
 }
 
 function oddsFullPen(nCat: number, nCh: number): number[] {
-  return [...oddsPen(nCat, nCh), 0, 0, 0, 0.001, 0.001, 0.001, 0.001, ...new Array<number>(ODDS_AGE_THRESHOLDS.length).fill(ODDS_AGE_THRESHOLD_PEN)];
+  return [...oddsPen(nCat, nCh), 0, 0, 0, 1, 1, 1, 1, ...new Array<number>(ODDS_AGE_THRESHOLDS.length).fill(ODDS_AGE_THRESHOLD_PEN), 1];
 }
 
 /** The logistic fit by Newton steps: 60 rounds at most, stopping when the step is tiny. */
@@ -953,7 +957,7 @@ function oddsBase(x: number[][], y: number[], listed: string[]): { tenFold: numb
  * a term is kept only when it lowers the Brier score in BOTH the ten-fold test
  * and the walk-forward test.
  */
-export function fitOdds(snap: Snap): OddsModel {
+export function fitOdds(snap: Snap, value: ValueModel): OddsModel {
   const peers = oddsPeerSet(snap);
   const n = peers.length;
   const y = peers.map((p) => (isPreToken(p) ? 0 : 1));
@@ -961,7 +965,9 @@ export function fitOdds(snap: Snap): OddsModel {
   const baseRate = y.reduce((s, v) => s + v, 0) / n;
   const categories = [...new Set(peers.map((p) => p.category ?? '?'))].sort();
   const top = topChains(peers);
-  const x = oddsFullRows(peers, categories, top, snap.as_of, snap.floor_usd);
+  const logMultBySlug: Record<string, number> = {};
+  for (const p of snap.protocols) logMultBySlug[p.slug] = Math.log(fittedMultiple(p, value));
+  const x = oddsFullRows(peers, categories, top, snap.as_of, snap.floor_usd, (p) => logMultBySlug[p.slug] ?? 0);
   const pen = oddsFullPen(categories.length, top.length + 1);
   const base = oddsBase(x, y, listed);
   const { chainFreq, catTvlStats } = oddsStructureStats(peers);
@@ -991,6 +997,7 @@ export function fitOdds(snap: Snap): OddsModel {
   const extras: Array<{ label: string; term: string }> = [
     { label: '+ size, ln TVL', term: 'size' },
     { label: '+ 7-day growth', term: 'growth' },
+    { label: '+ fitted value multiple', term: 'logmult' },
     { label: '+ control: growth of another row', term: 'ctrl' },
   ];
   for (const extra of extras) {
@@ -1063,6 +1070,7 @@ export function fitOdds(snap: Snap): OddsModel {
     catTvlStats,
     catBlindBrier,
     calledRight: finalCalledRight,
+    logMultBySlug,
     boot,
   };
 }
@@ -1071,7 +1079,7 @@ export function fitOdds(snap: Snap): OddsModel {
 export function tokenOdds(p: Proto, model: OddsModel, asOf: string): number {
   const nCat = model.categories.length;
   const nCh = model.topChains.length + 1;
-  const row = new Array<number>(15 + nCat + nCh).fill(0);
+  const row = new Array<number>(16 + nCat + nCh).fill(0);
   row[0] = 1;
   const a = ageDays(asOf, p.listed_at);
   const ageYears = (a ?? 180) / 365;
@@ -1087,6 +1095,7 @@ export function tokenOdds(p: Proto, model: OddsModel, asOf: string): number {
   const structure = oddsStructureRow(p, model.floorUsd, model.chainFreq, model.catTvlStats);
   for (let i = 0; i < structure.length; i++) row[5 + nCat + nCh + i] = structure[i]!;
   for (let i = 0; i < ODDS_AGE_THRESHOLDS.length; i++) row[9 + nCat + nCh + i] = ageYears >= ODDS_AGE_THRESHOLDS[i]! ? 1 : 0;
+  row[15 + nCat + nCh] = model.logMultBySlug[p.slug] ?? 0;
   const cols = oddsCols(model.finalTerms, nCat, nCh);
   return logistic(dot(cols.map((c) => row[c]!), model.beta));
 }
@@ -1406,7 +1415,7 @@ function boardChecksum(board: BoardRow[]): string {
 /** Build the board, the ledger and the evidence from the snapshot. */
 export function buildLedger(snap: Snap): { board: BoardRow[]; data: RadarData; evidence: Evidence } {
   const value = fitValue(snap);
-  const odds = fitOdds(snap);
+  const odds = fitOdds(snap, value);
   const parentSet = new Set(snap.protocols.filter((p) => isParentRecorded(p, snap)).map((p) => p.slug));
   const priced = snap.protocols.filter((p) => !isPreToken(p) && p.mcap_usd !== null && p.mcap_usd > 0);
   const ranked = snap.protocols.filter(isRankable);
