@@ -1,4 +1,4 @@
-# Token Launch Radar — radar-8 ("The Launch Ledger")
+# Token Launch Radar — radar-9 ("The Launch Ledger")
 
 [![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 [![rank](https://make.fun/badge/token-radar-01/alpha-working/token-radar-01/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
@@ -8,7 +8,7 @@ A radar for pre-token protocols: it ranks the protocols whose token does not
 exist yet by an implied value fitted from the snapshot's own record, and shows
 a reader how to farm each one.
 
-## Model (radar-8)
+## Model (radar-9; model and board unchanged from radar-8)
 
 - **Value multiple, fitted not ruled.** `log(mcap / TVL)` is fitted by median
   regression on the 95 traded tokens in the snapshot (ln TVL, its square,
@@ -67,6 +67,11 @@ board.json sha256 c5560238abfdc913cdc4925a676f8d5056ecb965551de5a458d99f16bb91ce
 `dashboard/` is a static page (no network): the board, a detail view per
 protocol, filters (category, chain, TVL, growth, age, verdict, watchlist),
 8 sorts, scenario controls, the evidence tables and the 758-protocol ledger.
+Radar-9 rebuilds the first screen for readability: six KPI cards with
+20px headline values, one out-of-sample evidence panel (kept-path rows,
+rejected terms named), a larger cap-vs-TVL scatter, taller board rows
+showing verdict, net $/hr, break-even and a setup -> weekly -> exit farm
+summary, and the full 9-step farm plan in the detail view.
 Editorial ledger theme: warm paper, ink, copper, Georgia serif.
 
 Bounty: https://make.fun/bounty/token-radar-01

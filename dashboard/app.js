@@ -18,26 +18,24 @@ const boardChecksum = () => {
   return h.toString(16).padStart(8, '0');
 };
 
-/** Hash state: q cat chain tvl growth age wl verdict sort dir tab p exp cmp. */
+/** Hash state: q cat chain tvl growth age wl verdict sort dir tab p cmp. */
 function readHash() {
   const s = Object.fromEntries(new URLSearchParams(location.hash.slice(1)));
   return {
     q: s.q || '', cat: s.cat || '', chain: s.chain || '', tvl: s.tvl || '', growth: s.growth || '',
     age: s.age || '', wl: s.wl === '1', verdict: s.verdict || '', sort: s.sort || 'implied', dir: s.dir || 'desc',
-    tab: s.tab || 'pre', p: s.p || '', exp: s.exp || '', cmp: s.cmp || '',
+    tab: s.tab || 'pre', p: s.p || '', cmp: s.cmp || '',
   };
 }
 let st = readHash();
 function writeHash() {
   const p = new URLSearchParams();
-  for (const k of ['q', 'cat', 'chain', 'tvl', 'growth', 'age', 'verdict', 'sort', 'dir', 'tab', 'p', 'exp', 'cmp']) if (st[k]) p.set(k, st[k]);
+  for (const k of ['q', 'cat', 'chain', 'tvl', 'growth', 'age', 'verdict', 'sort', 'dir', 'tab', 'p', 'cmp']) if (st[k]) p.set(k, st[k]);
   if (st.wl) p.set('wl', '1');
   history.replaceState(null, '', '#' + p.toString());
 }
-const expanded = new Set(st.exp ? st.exp.split(',') : []);
 const compared = new Set(st.cmp ? st.cmp.split(',') : []);
 function syncSets() {
-  st.exp = [...expanded].join(',');
   st.cmp = [...compared].join(',');
   writeHash();
 }
@@ -76,10 +74,16 @@ function proof() {
 function accounting() {
   const total = ev.ledger.reduce((sum, g) => sum + g.count, 0);
   const colors = ['#1c1917', '#166534', '#b45309', '#78716c', '#a8a29e', '#7f1d1d'];
-  const bar = ev.ledger.map((g, i) => `<i style="width:${(g.count / total * 100).toFixed(2)}%;background:${colors[i % colors.length]}" title="${esc(g.label)}: ${g.count}"></i>`).join('');
+  const grouped = [];
+  for (const g of ev.ledger) {
+    const key = g.label.split(' · ')[0];
+    const at = grouped.find((x) => x.label === key);
+    if (at) at.count += g.count; else grouped.push({ label: key, count: g.count });
+  }
+  const bar = grouped.map((g, i) => `<i style="width:${(g.count / total * 100).toFixed(2)}%;background:${colors[i % colors.length]}" title="${esc(g.label)}: ${g.count}"></i>`).join('');
   const boardTotal = rows.reduce((sum, r) => sum + r.implied_value_usd, 0);
   const monotonic = rows.every((r, i) => i === 0 || rows[i - 1].implied_value_usd >= r.implied_value_usd);
-  $('#accounting').innerHTML = `<div class="acct-head"><h3>Protocol accounting — all ${total} snapshot protocols in exactly one group</h3><span class="check-line">✓ ranks 1–${rows.length} in order, values ${monotonic ? 'never rise' : 'RISE'} · ✓ board total ${full(boardTotal)} · ✓ ledger ${total}/${ev.snapshotProtocols}</span></div><div class="bar">${bar}</div><div class="legend">${ev.ledger.map((g) => `<span>${esc(g.label)} <b>${g.count}</b></span>`).join('')}</div>`;
+  $('#accounting').innerHTML = `<div class="acct-head"><h3>Protocol accounting — all ${total} snapshot protocols in exactly one group</h3><span class="check-line">✓ ranks 1–${rows.length} in order, values ${monotonic ? 'never rise' : 'RISE'} · ✓ board total ${full(boardTotal)} · ✓ ledger ${total}/${ev.snapshotProtocols}</span></div><div class="bar">${bar}</div><div class="legend">${grouped.map((g) => `<span>${esc(g.label)} <b>${g.count}</b></span>`).join('')}<span>12 groups in the ledger below</span></div>`;
 }
 function bootline() {
   const vb = ev.value.boot, ob = ev.odds.boot;
@@ -87,29 +91,40 @@ function bootline() {
 }
 function scatterHtml() {
   const sc = ev.scatter;
-  const W = 340, H = 112, L = 36, R = 6, T = 6, B = 24;
+  const W = 380, H = 150, L = 42, R = 8, T = 8, B = 30;
   const x0 = 6, x1 = 10.6, y0 = 5, y1 = 11.4;
   const X = (tvl) => (L + (Math.log10(tvl) - x0) / (x1 - x0) * (W - L - R)).toFixed(1);
   const Y = (cap) => (H - B - (Math.log10(cap) - y0) / (y1 - y0) * (H - T - B)).toFixed(1);
   const bandTop = sc.band.map((b) => `${X(b.tvl)},${Y(b.hi)}`).join(' ');
   const bandBot = [...sc.band].reverse().map((b) => `${X(b.tvl)},${Y(b.lo)}`).join(' ');
   const mid = sc.band.map((b) => `${X(b.tvl)},${Y(b.mid)}`).join(' ');
-  const pts = sc.points.map((p) => `<circle cx="${X(p.tvl)}" cy="${Y(p.mcap)}" r="2.2" fill="#b45309" fill-opacity="0.62" stroke="#1c1917" stroke-width="0.4"/>`).join('');
-  const xticks = [[1e6, '$1M'], [1e7, '$10M'], [1e8, '$100M'], [1e9, '$1B'], [1e10, '$10B']].map(([v, l]) => `<text x="${X(v)}" y="${H - 13}" text-anchor="middle" class="ax">${l}</text><line x1="${X(v)}" y1="${T}" x2="${X(v)}" y2="${H - B}" class="grid"/>`).join('');
-  const yticks = [[1e6, '$1M'], [1e8, '$100M'], [1e10, '$10B']].map(([v, l]) => `<text x="${L - 3}" y="${+Y(v) + 3}" text-anchor="end" class="ax">${l}</text><line x1="${L}" y1="${Y(v)}" x2="${W - R}" y2="${Y(v)}" class="grid"/>`).join('');
-  const svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="82" role="img" aria-label="Scatter of market cap against TVL for the 95 traded peers, with the fitted P25-P75 band">${xticks}${yticks}<polygon points="${bandTop} ${bandBot}" fill="#b45309" fill-opacity="0.16"/><polyline points="${mid}" fill="none" stroke="#1c1917" stroke-width="1.5"/>${pts}<text x="${(L + W - R) / 2}" y="${H - 2}" text-anchor="middle" class="axl">TVL (log)</text><text x="10" y="${(T + H - B) / 2}" text-anchor="middle" transform="rotate(-90 10 ${(T + H - B) / 2})" class="axl">Market cap (log)</text></svg>`;
-  return `<div class="mini scatter-mini"><h3>Cap vs TVL — ${sc.points.length} traded peers, fitted P25–P75 band</h3>${svg}<p>Band: fitted curve (${esc(sc.refCategory)}, 1 chain) ± held-out P25–P75 residuals.</p></div>`;
+  const pts = sc.points.map((p) => `<circle cx="${X(p.tvl)}" cy="${Y(p.mcap)}" r="2.7" fill="#b45309" fill-opacity="0.62" stroke="#1c1917" stroke-width="0.5"/>`).join('');
+  const xticks = [[1e6, '$1M'], [1e7, '$10M'], [1e8, '$100M'], [1e9, '$1B'], [1e10, '$10B']].map(([v, l]) => `<text x="${X(v)}" y="${H - 16}" text-anchor="middle" class="ax">${l}</text><line x1="${X(v)}" y1="${T}" x2="${X(v)}" y2="${H - B}" class="grid"/>`).join('');
+  const yticks = [[1e6, '$1M'], [1e8, '$100M'], [1e10, '$10B']].map(([v, l]) => `<text x="${L - 4}" y="${+Y(v) + 4}" text-anchor="end" class="ax">${l}</text><line x1="${L}" y1="${Y(v)}" x2="${W - R}" y2="${Y(v)}" class="grid"/>`).join('');
+  const svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="132" role="img" aria-label="Scatter of market cap against TVL for the 95 traded peers, with the fitted P25-P75 band">${xticks}${yticks}<polygon points="${bandTop} ${bandBot}" fill="#b45309" fill-opacity="0.16"/><polyline points="${mid}" fill="none" stroke="#1c1917" stroke-width="1.8"/>${pts}<text x="${(L + W - R) / 2}" y="${H - 3}" text-anchor="middle" class="axl">TVL (log)</text><text x="12" y="${(T + H - B) / 2}" text-anchor="middle" transform="rotate(-90 12 ${(T + H - B) / 2})" class="axl">Market cap (log)</text></svg>`;
+  return `<div class="mini scatter-mini"><h3>Cap vs TVL — ${sc.points.length} traded peers</h3><p class="ev-sub">Fitted curve (${esc(sc.refCategory)}, 1 chain) with its P25–P75 band.</p>${svg}<p class="ev-note">Measured cover: <b>${Math.round(ev.value.claim2575 * 100)}%</b> P25–P75 · <b>${Math.round(ev.value.claim1090 * 100)}%</b> P10–P90 (WF ${Math.round(ev.value.wfCover2575 * 100)}% · ${Math.round(ev.value.wfCover1090 * 100)}%).</p></div>`;
 }
 function formulaStrip() {
   const r = rows[0];
-  $('#formula-strip').innerHTML = `<p><b>Implied value = TVL × fitted multiple × token odds</b> — #1 ${esc(r.name)}: ${full(r.tvl_usd)} × ${num(r.value_multiple, 4)} × ${num(r.token_odds * 100, 1)}% = <b>${full(r.implied_value_usd)}</b>. Third check: category-blind value miss ×${ev.value.catBlindMiss.toFixed(2)}; category-blind odds Brier ${ev.odds.catBlindBrier.toFixed(3)}.</p>`;
+  $('#formula-strip').innerHTML = `<p><b>Implied value = TVL × fitted multiple × token odds</b> — #1 ${esc(r.name)}: ${full(r.tvl_usd)} × ${num(r.value_multiple, 4)} × ${num(r.token_odds * 100, 1)}% = <b>${full(r.implied_value_usd)}</b>.</p>`;
 }
 function termStrip() {
   const v = ev.value, o = ev.odds;
-  const vt = v.ladder.map((r) => `<tr><td>${esc(r.label)}</td><td>×${r.loo.toFixed(2)}</td><td>×${r.wfSingle.toFixed(2)}</td><td class="${r.kept ? 'kept' : 'notkept'}">${r.kept ? 'kept' : 'not kept'}</td></tr>`).join('');
-  const ot = o.ladder.map((r) => `<tr><td>${esc(r.label)}</td><td>${r.tenFold.toFixed(3)}</td><td>${r.wfMulti.toFixed(3)}</td><td>${Math.round(r.calledRight * 100)}%</td><td class="${r.kept ? 'kept' : 'notkept'}">${r.kept ? 'kept' : 'not kept'}</td></tr>`).join('');
-  const rt = `<tr><td>inside P25–P75, stated 50%</td><td>${Math.round(v.looCover2575 * 100)}%</td><td>${Math.round(v.wfCover2575 * 100)}%</td></tr><tr><td>inside P10–P90, stated 80%</td><td>${Math.round(v.looCover1090 * 100)}%</td><td>${Math.round(v.wfCover1090 * 100)}%</td></tr><tr><td>within ×3 of the model</td><td>${Math.round(v.looWithin3 * 100)}%</td><td>${Math.round(v.wfWithin3 * 100)}%</td></tr>`;
-  $('#term-strip').innerHTML = `<div class="mini"><h3>Value terms — LOO · walk-forward</h3><table class="ev"><tbody>${vt}</tbody></table></div><div class="mini"><h3>Odds terms — Brier 10-fold · walk-forward · called right</h3><table class="ev"><thead><tr><th>Term</th><th>Brier</th><th>WF</th><th>Right</th><th>Kept</th></tr></thead><tbody>${ot}</tbody></table></div><div class="mini"><h3>Is the printed range honest?</h3><table class="ev"><thead><tr><th>Share of real caps</th><th>LOO</th><th>Walk-fwd</th></tr></thead><tbody>${rt}</tbody></table><p>Claimed cover is measured, not labelled: ${Math.round(v.claim2575 * 100)}% · ${Math.round(v.claim1090 * 100)}%.</p></div>` + scatterHtml();
+  // First screen shows the kept path only, one scannable row per term. The
+  // full ladder, including every rejected term's held-out numbers, is in the
+  // evidence panel below the board.
+  const vKept = v.ladder.filter((r) => r.kept);
+  const vRows = vKept.map((r, i) => `<div class="ev-row${i === 0 ? ' base' : ''}${i === vKept.length - 1 ? ' final' : ''}"><span class="t">${esc(r.label)}</span><span class="n">×${r.loo.toFixed(2)} · <b>×${r.wfSingle.toFixed(2)}</b></span></div>`).join('');
+  const shortOut = (label) => label.replace(/^\+ /, '').replace('control: growth of another row', 'control').replace('age, years listed', 'age');
+  const vOut = v.ladder.filter((r) => !r.kept).map((r) => esc(shortOut(r.label))).join(', ');
+  const oKept = o.ladder.filter((r) => r.kept);
+  const oRows = oKept.map((r, i) => `<div class="ev-row${i === 0 ? ' base' : ''}${i === oKept.length - 1 ? ' final' : ''}"><span class="t">${esc(r.label)}</span><span class="n">${r.tenFold.toFixed(3)} · <b>${r.wfMulti.toFixed(3)}</b></span></div>`).join('');
+  const oOut = o.ladder.filter((r) => !r.kept).map((r) => esc(shortOut(r.label))).join(', ');
+  $('#term-strip').innerHTML =
+    `<div class="evidence-head"><h2>Out-of-sample evidence</h2><span>A term is kept only when it improves every held-out test.</span></div>` +
+    `<div class="mini"><h3>Value if it launches — typical miss</h3><p class="ev-sub">${v.n} traded tokens · leave-one-out · <b>walk-forward</b>. Lower is better.</p><div class="ev-rows">${vRows}</div><p class="ev-note">Not kept: ${vOut}.</p></div>` +
+    `<div class="mini"><h3>Token odds — Brier score</h3><p class="ev-sub">${o.n} peers · ten-fold · <b>walk-forward</b>. Called right ${Math.round(o.calledRight * 100)}% held out.</p><div class="ev-rows">${oRows}</div><p class="ev-note">Not kept: ${oOut}.</p></div>` +
+    scatterHtml();
 }
 
 /* ---- the tape ---- */
@@ -288,7 +303,6 @@ function renderBoard() {
     $('#row-count').textContent = `${list.length} of 198 rows`;
     $('#board-body').innerHTML = list.map((r) => {
       const v = verdictFor(r);
-      const open = expanded.has(r.slug);
       return `<tr data-slug="${r.slug}">
         <td class="cmpcol"><input type="checkbox" class="cmp" data-slug="${r.slug}"${compared.has(r.slug) ? ' checked' : ''} aria-label="Compare ${esc(r.name)}"></td>
         <td class="num">${r.rank}<span class="rankrange">${r.rank_low}–${r.rank_high}</span></td>
@@ -299,9 +313,9 @@ function renderBoard() {
         <td class="num">${money(r.if_launches_usd)}</td>
         <td class="num"><b>${money(r.implied_value_usd)}</b> <span class="range">${money(r.range_p25_usd)}–${money(r.range_p75_usd)}</span>${bandHtml(r)}</td>
         <td class="num">${num(r.token_odds * 100, 0)}%<span class="oddsbar"><i style="width:${num(r.token_odds * 100, 0)}%"></i></span></td>
-        <td><span class="chip ${v.verdict.toLowerCase()}">${v.verdict}</span> <button type="button" class="plan-btn" data-slug="${r.slug}">${open ? 'Plan ▾' : 'Plan ▸'}</button><span class="farmline">${r.farm_steps.length} steps · ${money(v.dep)} · ${FARM.hours}h · BE ${num(v.breakEvenDrop * 100, 1)}%</span></td>
+        <td><span class="chip ${v.verdict.toLowerCase()}">${v.verdict}</span><button type="button" class="detail-btn" data-slug="${r.slug}">Details</button><span class="farmline">${r.farm_steps.length} steps · ${money(v.dep)} · ${FARM.hours}h</span><span class="farmsummary">BE ${num(v.breakEvenDrop * 100, 1)}% · setup → weekly → exit</span></td>
         <td class="num ${v.perHr >= 0 ? 'pos' : 'neg'}">${v.perHr >= 0 ? '+' : '−'}$${Math.abs(v.perHr).toFixed(2)}</td>
-      </tr>` + (open ? `<tr class="plan-row"><td colspan="11">${farmPlanHtml(r)}</td></tr>` : '');
+      </tr>`;
     }).join('');
     $('#empty').hidden = list.length > 0;
   } else {
@@ -322,7 +336,7 @@ function renderBoard() {
   });
   $('#board-body').querySelectorAll('tr[data-slug]').forEach((tr) => {
     tr.onclick = (e) => {
-      if (e.target.closest('input.cmp, button.plan-btn')) return;
+      if (e.target.closest('input.cmp, button.detail-btn')) return;
       openDetail(tr.dataset.slug);
     };
   });
@@ -332,11 +346,8 @@ function renderBoard() {
       syncSets(); compareBar();
     };
   });
-  $('#board-body').querySelectorAll('button.plan-btn').forEach((btn) => {
-    btn.onclick = () => {
-      if (expanded.has(btn.dataset.slug)) expanded.delete(btn.dataset.slug); else expanded.add(btn.dataset.slug);
-      syncSets(); renderBoard();
-    };
+  $('#board-body').querySelectorAll('button.detail-btn').forEach((btn) => {
+    btn.onclick = () => openDetail(btn.dataset.slug);
   });
   compareBar();
   scenarioLine();
